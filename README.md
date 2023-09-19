@@ -39,40 +39,41 @@
 - GAM Poisson
 - GAM Gamma
 
-## Model Selection
 
 Details on the models and their statistics are as follows:
 
+## Model Selection
+
 ### GLM Models
 
-| Model Details                                                                                                                                                  | Deviance explained | AIC   |
-|----------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------|-------|
-| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*I(rt^2) + rt + deceduti_per_day, family = poisson`                              | 0.969               | 7715.7|
-| `totale_ospedalizzati ~ mean_nuovi_positivi+ sqrt(mean_dimessi_guariti_per_day)*I(rt^2) + rt, quasipoisson`                                                    | 0.948               | NA    |
-| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day) * I(rt^2) + rt, family = Gamma(link = "log")`                                  | 0.943               | 1966.4|
+| Model Details | Deviance Explained | AIC |
+| --- | --- | --- |
+| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*I(rt^2) + rt + deceduti_per_day, family = poisson` | 0.969 | 7715.7 |
+| `totale_ospedalizzati ~ mean_nuovi_positivi+ sqrt(mean_dimessi_guariti_per_day)*I(rt^2) + rt, quasipoisson` | 0.948 | NA |
+| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day) * I(rt^2) + rt, family = Gamma(link = "log")` | 0.943 | 1966.4 |
 
 ### GAM Models
 
-| Model Details                                                                                                                                                                | Adjusted R2 | AIC      |
-|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------|----------|
-| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day), family = poisson(link = log)`                                                              | 0.992       | 2708.01  |
-| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2), family = Gamma(link = log)`                                                      | 0.982       | 1746.353 |
+| Model Details | Adjusted R2 | AIC |
+| --- | --- | --- |
+| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day), family = poisson(link = log)` | 0.992 | 2708.01 |
+| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2), family = Gamma(link = log)` | 0.982 | 1746.353 |
 
 ## Data Prediction
 
 ### GLM Models
 
-| Model Details                                                                                                                                                  | Deviance explained | AIC   | RMSE  |
-|----------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------|-------|-------|
-| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*I(rt^2) + rt + deceduti_per_day, family = poisson`                              | 0.969               | 7715.7| 658.8 |
-| `totale_ospedalizzati ~ mean_nuovi_positivi+ sqrt(mean_dimessi_guariti_per_day)*I(rt^2) + rt, quasipoisson`                                                    | 0.948               | NA    | 819.2 |
-| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day) * I(rt^2) + rt, family = Gamma(link = "log")`                                  | 0.943               | 1966.4| 746.6 |
+| Model Details | Deviance Explained | AIC | RMSE |
+| --- | --- | --- | --- |
+| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*I(rt^2) + rt + deceduti_per_day, family = poisson` | 0.969 | 7715.7 | 658.8 |
+| `totale_ospedalizzati ~ mean_nuovi_positivi+ sqrt(mean_dimessi_guariti_per_day)*I(rt^2) + rt, family = quasipoisson` | 0.948 | NA | 819.2 |
+| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day) * I(rt^2) + rt, family = Gamma(link = "log")` | 0.943 | 1966.4 | 746.6 |
 
 ### GAM Models
 
-| Model Details                                                                                                                                                                | Adjusted R2 | AIC      | RMSE  |
-|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------|----------|-------|
-| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day), family = poisson(link = log)`                                                              | 0.992       | 2708.01  | 152.1 |
-| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2), family = Gamma(link = log)`                                                      | 0.982       | 1746.353 | 313.3 |
+| Model Details | Adjusted R2 | AIC | RMSE |
+| --- | --- | --- | --- |
+| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day), family = poisson(link = log)` | 0.992 | 2708.01 | 152.1 |
+| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2), family = Gamma(link = log)` | 0.982 | 1746.353 | 313.3 |
 
 
