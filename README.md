@@ -60,9 +60,19 @@ Details on the models and their statistics are as follows:
 
 ## Data Prediction
 
-... [details of the prediction results, using the similar tables as above for clarity]
+### GLM Models
 
-## Conclusion
+| Model Details                                                                                                                                                  | Deviance explained | AIC   | RMSE  |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------|-------|-------|
+| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*I(rt^2) + rt + deceduti_per_day, family = poisson`                              | 0.969               | 7715.7| 658.8 |
+| `totale_ospedalizzati ~ mean_nuovi_positivi+ sqrt(mean_dimessi_guariti_per_day)*I(rt^2) + rt, quasipoisson`                                                    | 0.948               | NA    | 819.2 |
+| `totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day) * I(rt^2) + rt, family = Gamma(link = "log")`                                  | 0.943               | 1966.4| 746.6 |
 
-... [brief wrap-up of the study, main findings, and possible future directions]
+### GAM Models
+
+| Model Details                                                                                                                                                                | Adjusted R2 | AIC      | RMSE  |
+|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------|----------|-------|
+| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day), family = poisson(link = log)`                                                              | 0.992       | 2708.01  | 152.1 |
+| `totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2), family = Gamma(link = log)`                                                      | 0.982       | 1746.353 | 313.3 |
+
 
