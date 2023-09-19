@@ -1,0 +1,530 @@
+---
+title: "Intro"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(PerformanceAnalytics)
+library(performance)
+library(reshape2)
+library(ggforce)
+library(MASS)
+library(car)
+library(mgcv)
+set.seed(123)
+```
+
+## Exploratory Data Analysis
+
+The goal of our ananlysis is to study how the value of totale_ospedalizzati (our variable of interest) changed overtime due to other factors and to predict how it will change at the begininning of February. 
+
+The dataset of interest contains information about the Covid-19 spreading outbreak (on 30 variables) and is taken from the official website of Protezione Civile.
+
+To region to be analysed is Lomabrdia and the period of interest is from 1st October 2020 to 1st February 2021. We have extracted those data from the official database.
+
+Our varibale of interest is totale_ospedalizzati.
+
+```{r echo=FALSE}
+df<-read.csv("https://raw.githubusercontent.com/pcm-dpc/COVID-19/master/dati-regioni/dpc-covid19-ita-regioni.csv",na.strings=c("",NA))
+
+beg<-"2020-09-25T00:00:00"
+end<-"2021-02-18T00:00:00"
+
+df_sub <- df[df$denominazione_regione == 'Lombardia',]
+df_sub <- df_sub[df_sub$data >= beg & df_sub$data <=end,]
+summary(df_sub)
+
+```
+
+
+First, we give a brief overview to the data contained in the database. As it can be noticed some of the 30 variables miss information for around 50% or more of the observations, such as:
+
+* `totale_positivi_test_molecolare`
+* `totale_positivi_test_antigenico_rapido`
+* `codice_nuts_1`
+* `codice_nuts_2`
+* `tamponi_test_molecolare`
+* `tamponi_test_antigenico_rapido`
+* `casi_da_sospetto_diagnostico`
+* `casi_da_screening`
+* `ingressi_terapia_intensiva`
+
+Indeed some of these variables have been recorded olnly after the 2021-01-15. Other variables are completely missing, such as:
+* `note`
+* `note_test`       
+* `note_casi`
+
+We have decided to remove from the dataset that we will use for the analysis all these variables and the variables related to the region identification (such as stato, codice_regione, denominazione_regione, lat, lon).
+
+**variables left for modeling are 11**:
+
+* `ricoverati_con_sintomi`: Hospitalised patients with symptoms.
+* `terapia_intensiva`: Intensive Care.
+* `isolamento_domiciliare`: Home confinement
+* `totale_positivi`: Total amount of current positive cases (Hospitalised patients + Home confinement).
+* `variazione_totale_positivi`: New amount of current positive cases (totale_positivi current day - totale_positivi previous day).
+* `nuovi_positivi`: New amount of current positive cases (totale_casi current day - totale_casi previous day).
+* `dimessi_guariti`: Recovered.
+* `deceduti`: Death (cumulated values).
+* `totale_casi`: Total amount of positive cases.
+* `tamponi`: Tests performed.
+* `casi_testati`: Total number of people tested.
+
+5 variables out of the former list are cumulative so they hve been converted in **per_day** data. These variables are:
+
+* `dimessi_guariti`
+* `deceduti`
+* `totale_casi`
+* `tamponi`
+* `casi_testati`
+
+```{r echo=FALSE}
+df_sub <- df_sub[,c("data",
+                    "totale_ospedalizzati",
+                    "ricoverati_con_sintomi", 
+                    "totale_positivi", 
+                    "nuovi_positivi", 
+                    "dimessi_guariti", 
+                    "deceduti",
+                    "variazione_totale_positivi", 
+                    "terapia_intensiva",
+                    "casi_testati", 
+                    "totale_casi", 
+                    "tamponi",
+                    "isolamento_domiciliare"
+)]
+
+
+
+dimessi_guariti_per_day <- diff(df_sub$dimessi_guariti)
+df_sub$dimessi_guariti_per_day <- c(dimessi_guariti_per_day[1],dimessi_guariti_per_day)
+
+deceduti_per_day <- diff(df_sub$deceduti)
+df_sub$deceduti_per_day <- c(deceduti_per_day[1],deceduti_per_day)
+
+casi_testati_per_day <- diff(df_sub$casi_testati)
+df_sub$casi_testati_per_day <- c(casi_testati_per_day[1],casi_testati_per_day)
+
+totale_casi_per_day <- diff(df_sub$totale_casi)
+df_sub$totale_casi_per_day <- c(totale_casi_per_day[1],totale_casi_per_day)
+
+tamponi_per_day <- diff(df_sub$tamponi)
+df_sub$tamponi_per_day <- c(tamponi_per_day[1],tamponi_per_day)
+
+```
+
+
+Once we have the complete dataset we have decided to insert two other variables: zone colors and rt_poitivi.
+Assuming that effects of restriction rules can be seen only after a certain amount of time, we have shifted the colors by 14 days forward.
+
+```{r, echo=FALSE}
+aree_zone <- read.csv("https://raw.githubusercontent.com/ondata/covid19italia/master/webservices/COVID-19Aree/processing/areeStorico_wide.csv")
+aree_zone <- aree_zone[aree_zone["datasetIniISO"] >= "2020-09-25", ]
+aree_zone <- aree_zone[aree_zone["datasetIniISO"] < "2021-02-18", ]
+aree_zone <- data.frame(aree_zone$datasetIniISO, aree_zone$ITC4)
+
+column_new_dates <- data.frame(seq(from = as.Date(beg), to = as.Date(end), by= "day"))
+colnames(column_new_dates) <- "data"
+colnames(aree_zone) <- c("data", "color")
+aree_zone$data <- as.Date(aree_zone$data)
+
+#Remove rows with empty color
+aree_zone <- aree_zone[!(is.na(aree_zone$color) | aree_zone$color==""), ]
+
+aree_zone_merged <- merge(column_new_dates, aree_zone, by = "data", all.x = TRUE)
+
+aree_zone_merged[1,2] <- "bianca"
+
+last_color = "bianca"
+for (i in 1:nrow(aree_zone_merged)){
+    if(is.na(aree_zone_merged[i,2])){
+        aree_zone_merged[i,2] = last_color
+    }else{
+        last_color = aree_zone_merged[i,2]
+    }
+}
+
+# Delay the colors by 2 weeks: shift forward the color vector by 14 cells
+# prepending 14 cells (days) of zona bianca
+d_color <- aree_zone_merged$color
+color_delayed <- c(rep("bianca",times=14), d_color[1:(length(d_color)-14)])
+aree_zone_merged_ext <- aree_zone_merged
+str(aree_zone_merged_ext)
+aree_zone_merged_ext$color_delayed <- as.factor(color_delayed)
+
+df_sub$data <- as.Date(df_sub$data)
+
+df_sub <- merge(df_sub, aree_zone_merged_ext, by = "data")
+#df_sub
+df_sub$color <- as.factor(df_sub$color)
+df_sub$color_delayed <- as.factor(df_sub$color_delayed)
+```
+
+```{r, echo=FALSE}
+rt_lomb <- read.csv("iss_rt_lombardia.csv")
+rt_lomb <- rt_lomb[rt_lomb["data"] >= "2020-09-25", ]
+rt_lomb <- rt_lomb[rt_lomb["data"] < "2021-02-18", ]
+
+
+rt <- data.frame(data=as.Date(rt_lomb$data), rt=rt_lomb$rt_positivi)
+summary(rt)
+
+df_sub$data<-as.Date(df_sub$data)
+df_sub <- merge(df_sub, rt, by='data')
+
+```
+
+
+```{r}
+
+df_sub$dummy = 0
+i=1
+
+for(data in df_sub$data){
+    if(data >= as.Date("2020-11-22")){
+        df_sub[i, "dummy" ] = 1
+    }
+    i = i+1
+}
+
+df_sub_ext<-df_sub
+
+```
+
+```{r}
+inizio_train<-"2020-10-01T00:00:00"
+end_train<-"2021-02-01T00:00:00"
+df_sub <- df_sub[df_sub$data >= inizio_train & df_sub$data <=end_train,]
+```
+
+After having filtered the dataset, we remains with 124 observations (from 1st October 2020 to 1st February 2021) and 22 variables.
+
+Here we plot our varible of interest over the period that we analyse:
+
+```{r , echo=FALSE}
+start_date <- as.Date("2020-10-02")
+end_date <- as.Date("2021-01-31")
+ggplot(df_sub, aes(x=as.Date(data), y=totale_ospedalizzati)) +
+  geom_rect(data = df_sub, 
+            aes(xmin=data, xmax = end_date, 
+                ymin = -Inf, ymax = Inf, 
+                fill = color), show.legend = FALSE) +
+    #scale_x_date(date_breaks = "10 years", date_labels = "%Y", 
+                #limits = c(min(as.Date(df_sub$data)), max(as.Date(df_sub$data)))) +
+    scale_fill_manual(values = c("arancione" = "orange1", "gialla" = "yellow1", "bianca" = "white", "rossa" = "tomato1")) +
+  geom_linerange(aes(ymax=totale_ospedalizzati, 
+                     ymin=df_sub$totale_ospedalizzati[which.min(df_sub$totale_ospedalizzati)]), 
+                 data=df_sub[which.max(df_sub$totale_ospedalizzati),], 
+                 col="blue", lty=2) + 
+  geom_text(aes(label=totale_ospedalizzati), 
+            col="blue", data=df_sub[which.max(df_sub$totale_ospedalizzati),], 
+            hjust=7, vjust=-0.4) + 
+  geom_text(label=as.Date(df_sub[which.max(df_sub$totale_ospedalizzati),c("data")]), 
+            col="blue",
+            x=as.Date(df_sub$data[which.max(df_sub$totale_ospedalizzati)]),
+            y=100,
+            size=3) +
+  geom_segment(x = as.Date(df_sub$data[1]),
+               y = df_sub$totale_ospedalizzati[which.max(df_sub$totale_ospedalizzati)], 
+               xend = as.Date(df_sub$data[which.max(df_sub$totale_ospedalizzati)]), 
+               yend = df_sub$totale_ospedalizzati[which.max(df_sub$totale_ospedalizzati)], 
+               colour = "blue",
+               lty=2
+               )+
+  geom_line()+
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  theme_classic()
+
+  
+```
+
+
+As it can be seen from the graph, the peak of totale_ospedalizzati has been reached the 2020-11-22 with a value of 9340 people ospedalized.
+It can also be noticed that before the peak the variable of interest follows an exponential growth, while after the peak it follows a gaussian growth model. 
+For this reason we have created a dummy varible to indicate if the observation is before the peak (assigning value 0) or after the peak (assigning value 1).
+
+Here we plot the relevant varibales overtime:
+
+```{r echo=FALSE}
+df.m <- melt(df_sub[,-c(19, 20)], "data")
+
+ggplot(df.m, aes(as.Date(data), value, group = 1)) + 
+  geom_line() + 
+  facet_wrap(~variable, scales = "free") +
+  xlab("Date")
+
+```
+
+We have noticed that: `totale_ospedalizzati` is exact the sum of `ricoverati_con_sintomi` and `terapia_intensiva`, as it is shown in the graph:
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati')) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=ricoverati_con_sintomi, col='ricoverati_con_sintomi'))+
+  geom_line(aes(x=as.Date(data), y=terapia_intensiva, col='terapia_intensiva'))
+  
+```
+
+
+Second: `totale_ospedalizzati` is the difference of: `totale_positivi` - `isolamento_domiciliare`.
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati')) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=totale_positivi, col='totale_positivi'))+
+  geom_line(aes(x=as.Date(data), y=isolamento_domiciliare, col='isolamento_domiciliare'))
+  
+```
+
+Thus these 4 variables out of the list of 11 variables will be omitted. (le togliamo perche non ha senso fare dei modelli cosi?)
+
+
+The remaining variables are 7:
+
+* `variazione_totale_positivi`: not interesting. (perche???)
+* `nuovi_positivi`: interesting.
+* `dimessi_guariti_per_day`: interesting ?
+* `deceduti_per_day`: interesting ?
+* `totale_casi_per_day`: interesting ?
+* `tamponi_per_day`: not interesting ?
+* `casi_testati_per_day`: not interesting ?
+
+
+We have also noticed that 'nuovi_positivi' is the same variable than 'totale_casi_per_day' (a varibale that we calculated). Thus we have decided to keep only 'nuovi_positivi'.
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=nuovi_positivi, color="nuovi_positivi")) +
+  geom_line() + 
+  geom_line(data=df_sub,aes(x=as.Date(data),y=totale_casi_per_day, color="totale_casi_per_day")) +
+  xlab("Date") + 
+  ylab("Daily count") + 
+  scale_color_manual(name="Variable", values = c(1:2))
+  #scale_y_continuous(breaks = seq(0,9500,by=1000))+
+
+```
+
+Then we look to the scatterplot and to the corrations between the variables to try to figure out which are the most significant variables:
+
+```{r , echo=FALSE}
+chart.Correlation(df_sub[,c("nuovi_positivi", 
+                            "dimessi_guariti_per_day",
+                            "deceduti_per_day",
+                            "casi_testati_per_day",                            
+                            "tamponi_per_day", 
+                            "totale_ospedalizzati"
+                            )])
+
+```
+
+As it can be noticed they "nuovi_positivi", "dimessi_guariti_per_day", "deceduti_per_day", "tamponi_per_day" have a strong correlation with the varibale of interest. 
+
+
+Now we look at the boxplots to spot outliers:
+
+```{r , echo=FALSE, fig.width=6, fig.height=6}
+# ggplot(df_sub, aes(y=nuovi_positivi)) + 
+#   geom_boxplot()
+varnames <- c("totale_ospedalizzati", "nuovi_positivi", "variazione_totale_positivi", 
+              "dimessi_guariti_per_day", "deceduti_per_day", "casi_testati_per_day",
+               "tamponi_per_day")
+indexes <- c(2,5,8,14,15,16,18)
+# boxplot(df_sub$nuovi_positivi,
+#         xlab=varnames[2],
+#         ylab="Count"
+#         )
+par(mfrow = c(3, 3))
+invisible(lapply(indexes, function(i) boxplot(df_sub[, i], ylab="Count", main=colnames(df_sub)[i])))
+#stripchart(df_sub$nuovi_positivi, method = "jitter", pch = 7, add = TRUE, col = "blue")
+```
+
+The variables with more outliers are (they have values that are external to the maximum and the minimum):
+
+* `variazione_totale_positivi`
+* `dimessi_guariti_per_day`: **GRAVE perché superano gli ospedalizzati** -> dati aggiornati con discontinuità.
+* `nuovi_positivi`
+* `casi_testati_per_day`: **NON GRAVE** -< sono sempre molto meno degli ospedalizzati. only one.
+* `deceduti_per_day`: just two.
+
+We will not consider `variazione_totale_positivi` anymore (perche???)
+
+Here we plot the different varibles overtime.
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=nuovi_positivi, color="nuovi_positivi")) +
+  geom_line() + 
+  geom_line(data=df_sub,aes(x=as.Date(data),y=totale_ospedalizzati, color="totale_ospedalizzati")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=dimessi_guariti_per_day, color="dimessi_guariti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=deceduti_per_day, color="deceduti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=casi_testati_per_day, color="casi_testati_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=tamponi_per_day, color="tamponi_per_day")) +
+  xlab("Date") + 
+  ylab("Daily count") + 
+  scale_color_manual(name="Variable", values = c(1:6))
+  #scale_y_continuous(breaks = seq(0,9500,by=1000))+
+
+```
+
+As it can be noticed from this graph and from the boxplot above 'dimessi_guariti_per_day' and 'nuovi_positivi' have a lot of outliers. 
+Moreover, we look to the mean of the nubmer of 'dimessi_guariti_per_day' and 'nuovi_positivi' per day of the week. As it can be noticed they do not have a uniform distribution between the diferent days of the week, indicating that the outlier can be also due to the day in which the data are recordered.
+For example: the average number of 'nuovi_positivi' is less on monday due to the fact than on sunday less tamponi are made. Insteadm the average number of 'dimessi_guariti_per_day' is less in the weekend as expected. 
+```{r , echo=FALSE}
+
+df_sub <- add_column(df_sub, weekdays(df_sub$data), .after="data")
+names(df_sub)[names(df_sub) == "weekdays(df_sub$data)"] <- "giorno_settimana"
+
+distinct_days <- as.factor(df_sub$giorno_settimana)
+
+
+count_week_day_dimessi <- tapply(df_sub$dimessi_guariti_per_day, df_sub$giorno_settimana, mean, simplify = FALSE)
+count_week_day_positivi <- tapply(df_sub$nuovi_positivi, df_sub$giorno_settimana, mean, simplify = FALSE)
+
+
+barplot(height = as.numeric(count_week_day_dimessi), names=levels(distinct_days))
+
+barplot(height = as.numeric(count_week_day_positivi), names=levels(distinct_days))
+
+
+```
+
+To solve the problems of the outliers we created a "moving average" for the variables 'dimessi_guariti_per_day' and 'nuovi_positivi', considering three days before and after the observations.
+the two graphs represent the moving mean.
+
+```{r, echo=FALSE}
+
+compute_mean_points <- function(var, from, to){
+    var_mean <- c()
+    for (i in 1:length(var)){
+        if(i >= length(var)-to){
+            var_mean <- append(var_mean, mean(var[(i-from):(length(var)-((length(var))-i))])) #mean tra i valori finali
+        }else if(i <= from){
+            var_mean <- append(var_mean, mean(var[1:(i+to)])) #mean tra i valori iniziali
+        }else{
+            var_mean <- append(var_mean, mean(var[(i-from):(i+to)])) #mean nei valori di mezzo
+        }
+
+    }
+    return(var_mean)
+}
+
+#Dismessi guariti per day
+var_mean <- compute_mean_points(df_sub_ext$dimessi_guariti_per_day, 3, 3)
+df_sub_ext$mean_dimessi_guariti_per_day <- var_mean
+
+
+
+
+#Nuovi positivi
+var_mean <- compute_mean_points(df_sub_ext$nuovi_positivi, 3, 3)
+df_sub_ext$mean_nuovi_positivi <- var_mean
+
+
+df_sub <- df_sub_ext[df_sub_ext$data >= inizio_train & df_sub_ext$data <= end_train,]
+
+ggplot(df_sub) +
+  geom_line(aes(x=as.Date(data),y=mean_dimessi_guariti_per_day, color="Moving mean")) +
+  xlab("Date") + 
+  ylab("Dismessi guariti") +
+  geom_point(aes(x=as.Date(data),y=dimessi_guariti_per_day))
+
+ggplot(df_sub) +
+  geom_line(aes(x=as.Date(data),y=mean_nuovi_positivi, color="Moving mean")) +
+  xlab("Date") + 
+  ylab("Nuovi positivi") +
+  geom_point(aes(x=as.Date(data),y=nuovi_positivi))
+
+
+
+```
+
+The new variables overtime are:
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=mean_nuovi_positivi, color="mean_nuovi_positivi")) +
+  geom_line() + 
+  geom_line(data=df_sub,aes(x=as.Date(data),y=totale_ospedalizzati, color="totale_ospedalizzati")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=mean_dimessi_guariti_per_day, color="mean_dimessi_guariti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=deceduti_per_day, color="deceduti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=mean_dimessi_guariti_per_day*dummy, color="mean_dimessi_guariti_per_day*dummy")) +
+  #geom_line(data=df_sub,aes(x=as.Date(data),y=casi_testati_per_day, color="casi_testati_per_day")) +
+  #geom_line(data=df_sub,aes(x=as.Date(data),y=tamponi_per_day, color="tamponi_per_day")) +
+  xlab("Date") + 
+  ylab("Daily count") + 
+  scale_color_manual(name="Variable", values = c(1:5))
+  #scale_y_continuous(breaks = seq(0,9500,by=1000))+
+
+```
+
+Here we show the scatterplots between the variable of interest and the other variables (before and after the moving mean):
+
+```{r, echo=FALSE}
+
+data_max_nuovi_positivi=df_sub[which.max(df_sub$mean_nuovi_positivi),]
+nuovi_positivi_max_split1 <- df_sub[df_sub$data < data_max_nuovi_positivi$data, ]
+nuovi_positivi_max_split2 <- df_sub[df_sub$data >= data_max_nuovi_positivi$data, ]
+
+plot1 <- ggplot() +
+  geom_point(aes(x=df_sub$totale_ospedalizzati[df_sub$data < data_max_nuovi_positivi$data], y=nuovi_positivi_max_split1$nuovi_positivi), color="red") + 
+  geom_point(aes(x=df_sub$totale_ospedalizzati[df_sub$data >= data_max_nuovi_positivi$data], y=nuovi_positivi_max_split2$nuovi_positivi), color="orange") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("nuovi_positivi")
+
+plot2 <- ggplot(df_sub, aes(x=totale_ospedalizzati, y=dimessi_guariti_per_day)) +
+  geom_point(color="green") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("dimessi_guariti_per_day")
+
+plot3 <- ggplot(df_sub, aes(x=totale_ospedalizzati, y=deceduti_per_day)) +
+  geom_point(color="black") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("deceduti_per_day")
+
+data_max_nuovi_positivi=df_sub[which.max(df_sub$mean_nuovi_positivi),]
+nuovi_positivi_max_split1 <- df_sub[df_sub$data < data_max_nuovi_positivi$data, ]
+nuovi_positivi_max_split2 <- df_sub[df_sub$data >= data_max_nuovi_positivi$data, ]
+
+plot4 <- ggplot() +
+  geom_point(aes(x=df_sub$totale_ospedalizzati[df_sub$data < data_max_nuovi_positivi$data], y=nuovi_positivi_max_split1$mean_nuovi_positivi), color="red") + 
+  geom_point(aes(x=df_sub$totale_ospedalizzati[df_sub$data >= data_max_nuovi_positivi$data], y=nuovi_positivi_max_split2$mean_nuovi_positivi), color="orange") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("mean_nuovi_positivi")
+
+plot5 <- ggplot(df_sub, aes(x=totale_ospedalizzati, y=mean_dimessi_guariti_per_day)) +
+  geom_point(color="green") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("mean_dimessi_guariti_per_day")
+library(ggpubr)
+ggarrange(plot1, plot2, plot3, plot4, plot5, ncol = 3, nrow = 3)
+```
+
+deceduti_per_day has a linear relationship with totale_ospedalizzati while mean_dimmessi_guariti_per_day seems to have a square relation with respect to totale_ospedalizzati. (e mean_nuovi_positivi_per day is almost linear until the peak of mean_nuovi_positivi).
+
+
+
+
+## Linear models 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

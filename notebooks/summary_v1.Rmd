@@ -1,0 +1,921 @@
+---
+title: "summary_v1"
+author: "Roberta"
+date: "23/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(PerformanceAnalytics)
+library(performance)
+library(reshape2)
+library(ggforce)
+library(MASS)
+library(car)
+library(mgcv)
+library(statmod)
+set.seed(123)
+```
+
+## Exploratory Data Analysis
+
+```{r include=FALSE}
+df<-read.csv("https://raw.githubusercontent.com/pcm-dpc/COVID-19/master/dati-regioni/dpc-covid19-ita-regioni.csv",na.strings=c("",NA))
+
+df_lomb <- df[df$denominazione_regione == 'Lombardia',]
+df_lomb <- df_lomb[df_lomb$data >= "2020-10-01T00:00:00" & df_lomb$data <= "2021-02-16T00:00:00",]
+
+df_lomb <- df_lomb[,c("data",
+                    "totale_ospedalizzati",
+                    "ricoverati_con_sintomi", 
+                    "totale_positivi", 
+                    "nuovi_positivi", 
+                    "dimessi_guariti", 
+                    "deceduti",
+                    "variazione_totale_positivi", 
+                    "terapia_intensiva",
+                    "casi_testati", 
+                    "totale_casi", 
+                    "tamponi",
+                    "isolamento_domiciliare"
+)]
+
+dimessi_guariti_per_day <- diff(df_lomb$dimessi_guariti)
+df_lomb$dimessi_guariti_per_day <- c(dimessi_guariti_per_day[1],dimessi_guariti_per_day)
+
+deceduti_per_day <- diff(df_lomb$deceduti)
+df_lomb$deceduti_per_day <- c(deceduti_per_day[1],deceduti_per_day)
+
+casi_testati_per_day <- diff(df_lomb$casi_testati)
+df_lomb$casi_testati_per_day <- c(casi_testati_per_day[1],casi_testati_per_day)
+
+totale_casi_per_day <- diff(df_lomb$totale_casi)
+df_lomb$totale_casi_per_day <- c(totale_casi_per_day[1],totale_casi_per_day)
+
+tamponi_per_day <- diff(df_lomb$tamponi)
+df_lomb$tamponi_per_day <- c(tamponi_per_day[1],tamponi_per_day)
+
+```
+
+### Adding covariates: Lombardia (ITC4) region color in time -> check for legislation in that period!
+
+Extracting zone colors for the analysis reference period.
+Assuming that effects of restriction rules can be seen only after a certain 
+amount of time shift the colors by 14 days forward.
+
+```{r, echo=FALSE}
+aree_zone <- read.csv("https://raw.githubusercontent.com/ondata/covid19italia/master/webservices/COVID-19Aree/processing/areeStorico_wide.csv")
+aree_zone <- aree_zone[aree_zone["datasetIniISO"] >= "2020-10-01", ]
+aree_zone <- aree_zone[aree_zone["datasetIniISO"] < "2021-02-16", ]
+aree_zone <- data.frame(aree_zone$datasetIniISO, aree_zone$ITC4)
+
+column_new_dates <- data.frame(seq(from = as.Date("2020-10-01T17:00:00"), to = as.Date("2021-02-15T17:00:00"), by= "day"))
+colnames(column_new_dates) <- "data"
+colnames(aree_zone) <- c("data", "color")
+aree_zone$data <- as.Date(aree_zone$data)
+
+#Remove rows with empty color
+aree_zone <- aree_zone[!(is.na(aree_zone$color) | aree_zone$color==""), ]
+
+aree_zone_merged <- merge(column_new_dates, aree_zone, by = "data", all.x = TRUE)
+
+aree_zone_merged[1,2] <- "bianca"
+
+last_color = "bianca"
+for (i in 1:nrow(aree_zone_merged)){
+    if(is.na(aree_zone_merged[i,2])){
+        aree_zone_merged[i,2] = last_color
+    }else{
+        last_color = aree_zone_merged[i,2]
+    }
+}
+
+# Delay the colors by 2 weeks: shift forward the color vector by 14 cells
+# prepending 14 cells (days) of zona bianca
+d_color <- aree_zone_merged$color
+color_delayed <- c(rep("bianca",times=14), d_color[1:(length(d_color)-14)])
+aree_zone_merged_ext <- aree_zone_merged
+#str(aree_zone_merged_ext)
+aree_zone_merged_ext$color_delayed <- as.factor(color_delayed)
+
+df_lomb$data <- as.Date(df_lomb$data)
+
+df_lomb <- merge(df_lomb, aree_zone_merged_ext, by = "data")
+#df_sub
+df_lomb$color <- as.factor(df_lomb$color)
+df_lomb$color_delayed <- as.factor(df_lomb$color_delayed)
+```
+
+
+### Adding covariates: Lombardia (ITC4) RT in time 
+
+Rt for the reference interval
+
+```{r, echo=FALSE}
+rt_lomb <- read.csv("iss_rt_lombardia.csv")
+rt_lomb <- rt_lomb[rt_lomb["data"] >= "2020-10-01", ]
+rt_lomb <- rt_lomb[rt_lomb["data"] < "2021-02-16", ]
+
+
+rt <- data.frame(data=as.Date(rt_lomb$data), rt=rt_lomb$rt_positivi)
+summary(rt)
+
+df_lomb <- merge(df_lomb, rt, by = "data")
+
+```
+
+
+From the previous slide, we have seen that there are some outliers that we must take into account, but they can have some problems when creating the models. So we create a "moving average" for those variables that have outliers. 
+
+```{r, echo=FALSE}
+
+compute_mean_points <- function(var, from, to){
+    var_mean <- c()
+    for (i in 1:length(var)){
+        if(i >= length(var)-to){
+            var_mean <- append(var_mean, mean(var[(i-from):(length(var)-((length(var))-i))])) #mean tra i valori finali
+            
+        }else if(i <= from){
+            var_mean <- append(var_mean, mean(var[1:(i+to)])) #mean tra i valori iniziali
+        }else{
+            var_mean <- append(var_mean, mean(var[(i-from):(i+to)])) #mean nei valori di mezzo
+        }
+
+    }
+    return(var_mean)
+}
+
+#Dismessi guariti per day
+var_mean <- compute_mean_points(df_lomb$dimessi_guariti_per_day, 3, 3)
+df_lomb$mean_dimessi_guariti_per_day <- var_mean
+
+ggplot(df_lomb) +
+  geom_line(aes(x=as.Date(data),y=mean_dimessi_guariti_per_day, color="Moving mean")) +
+  xlab("Date") + 
+  ylab("Dismessi guariti") +
+  geom_point(aes(x=as.Date(data),y=dimessi_guariti_per_day))
+
+
+#Nuovi positivi
+var_mean <- compute_mean_points(df_lomb$nuovi_positivi, 3, 3)
+df_lomb$mean_nuovi_positivi <- var_mean
+
+ggplot(df_lomb) +
+  geom_line(aes(x=as.Date(data),y=mean_nuovi_positivi, color="Moving mean")) +
+  xlab("Date") + 
+  ylab("Nuovi positivi") +
+  geom_point(aes(x=as.Date(data),y=nuovi_positivi))
+
+```
+
+Calculate the day week:
+
+```{r , echo=FALSE}
+
+df_lomb <- add_column(df_lomb, weekdays(df_lomb$data), .after="data")
+names(df_lomb)[names(df_lomb) == "weekdays(df_lomb$data)"] <- "giorno_settimana"
+
+
+distinct_days <- as.factor(df_lomb$giorno_settimana)
+#names(df_lomb)[names(df_lomb) == "weekdays(df_lomb$data).1"] <- "giorno_settimana_2"
+#df_lomb<-subset(df_lomb, select=-c(giorno_settimana_2))
+
+count_week_day_dimessi <- tapply(df_lomb$dimessi_guariti_per_day, df_lomb$giorno_settimana, mean, simplify = FALSE)
+count_week_day_positivi <- tapply(df_lomb$nuovi_positivi, df_lomb$giorno_settimana, mean, simplify = FALSE)
+
+
+barplot(height = as.numeric(count_week_day_dimessi), names=levels(distinct_days))
+
+barplot(height = as.numeric(count_week_day_positivi), names=levels(distinct_days))
+
+
+```
+
+### Training dataset
+
+```{r}
+df_sub <- df_lomb[df_lomb$data >= "2020-10-01T00:00:00" & df_lomb$data <= "2021-02-01T00:00:00",]
+summary(df_sub)
+```
+
+### Data quality
+
+Plotting the variable of interest:
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=totale_ospedalizzati)) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_linerange(aes(ymax=totale_ospedalizzati, 
+                     ymin=df_sub$totale_ospedalizzati[which.min(df_sub$totale_ospedalizzati)]), 
+                 data=df_sub[which.max(df_sub$totale_ospedalizzati),], 
+                 col="red", lty=2) + 
+  geom_text(aes(label=totale_ospedalizzati), 
+            col="red", data=df_sub[which.max(df_sub$totale_ospedalizzati),], 
+            hjust=7, vjust=-0.4) + 
+  geom_text(label=as.Date(df_sub[which.max(df_sub$totale_ospedalizzati),c("data")]), 
+            col="red",
+            x=as.Date(df_sub$data[which.max(df_sub$totale_ospedalizzati)]),
+            y=100,
+            size=3) +
+  geom_segment(x = as.Date(df_sub$data[1]),
+               y = df_sub$totale_ospedalizzati[which.max(df_sub$totale_ospedalizzati)], 
+               xend = as.Date(df_sub$data[which.max(df_sub$totale_ospedalizzati)]), 
+               yend = df_sub$totale_ospedalizzati[which.max(df_sub$totale_ospedalizzati)], 
+               colour = "red",
+               lty=2
+               )
+```
+
+Plotting all the relevant columns in time
+
+```{r echo=FALSE, fig.width=12, fig.height=6}
+df.m <- melt(df_sub[,- c(19,20)], "data")
+ggplot(df.m, aes(data, value, group = 1)) + 
+  geom_line() + 
+  facet_wrap(~variable, scales = "free") +
+  xlab("Date")
+
+```
+
+Plotting all 3 interesting variables for the response variable `totale_ospedalizzati`.
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=nuovi_positivi, color="nuovi_positivi")) +
+  geom_line() + 
+  geom_line(data=df_sub,aes(x=as.Date(data),y=totale_ospedalizzati, color="totale_ospedalizzati")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=dimessi_guariti_per_day, color="dimessi_guariti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=deceduti_per_day, color="deceduti_per_day")) +
+  xlab("Date") + 
+  ylab("Daily count") + 
+  scale_color_manual(name="Variable", values = c(1:4))
+  #scale_y_continuous(breaks = seq(0,9500,by=1000))+
+
+```
+
+Scatterplot matrix of 3 interesting variables:
+
+```{r , echo=FALSE}
+chart.Correlation(df_sub[,c("nuovi_positivi", 
+                            "dimessi_guariti_per_day",
+                            "deceduti_per_day",
+                            "totale_ospedalizzati"
+                            )])
+
+```
+
+
+Plotting all 3 MEAN interesting variables for the response variable `totale_ospedalizzati`.
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=mean_nuovi_positivi, color="mean_nuovi_positivi")) +
+  geom_line() + 
+  geom_line(data=df_sub,aes(x=as.Date(data),y=totale_ospedalizzati, color="totale_ospedalizzati")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=mean_dimessi_guariti_per_day, color="mean_dimessi_guariti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=rt*1000, color="rt")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=deceduti_per_day*10, color="deceduti_per_day")) +
+  xlab("Date") + 
+  ylab("Daily count") + 
+  scale_color_manual(name="Variable", values = c(1:5))
+  #scale_y_continuous(breaks = seq(0,9500,by=1000))+
+
+```
+
+Scatterplot matrix of 4 interesting variables:
+
+```{r , echo=FALSE}
+chart.Correlation(df_sub[,c("mean_nuovi_positivi", 
+                            "mean_dimessi_guariti_per_day",
+                            "deceduti_per_day",
+                            "rt",
+                            "totale_ospedalizzati"
+                            )])
+
+```
+
+Plotting all 3 MEAN interesting variables for the response variable `totale_ospedalizzati` (including prediction period).
+
+```{r , echo=FALSE}
+ggplot(df_lomb, aes(x=as.Date(data), y=mean_nuovi_positivi, color="mean_nuovi_positivi")) +
+  geom_line() + 
+  geom_line(data=df_lomb,aes(x=as.Date(data),y=totale_ospedalizzati, color="totale_ospedalizzati")) +
+  geom_line(data=df_lomb,aes(x=as.Date(data),y=mean_dimessi_guariti_per_day, color="mean_dimessi_guariti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=(rt)*1000, color="rt")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=variazione_totale_positivi, color="variazione_totale_positivi")) +
+  xlab("Date") + 
+  ylab("Daily count") + 
+  scale_color_manual(name="Variable", values = c(1:5))
+  #scale_y_continuous(breaks = seq(0,9500,by=1000))+
+
+```
+
+This is with respect to `totale_ospedalizzati`, to see linear trend: only `deceduti_per_day` seems to be linear with it!
+Let's look better:
+
+```{r, echo=FALSE}
+
+data_max_nuovi_positivi=df_sub[which.max(df_sub$nuovi_positivi),]
+nuovi_positivi_max_split1 <- df_sub[df_sub$data < data_max_nuovi_positivi$data, ]
+nuovi_positivi_max_split2 <- df_sub[df_sub$data >= data_max_nuovi_positivi$data, ]
+
+plot1 <- ggplot() +
+  geom_point(aes(x=df_sub$totale_ospedalizzati[df_sub$data < data_max_nuovi_positivi$data], y=nuovi_positivi_max_split1$nuovi_positivi), color="red") + 
+  geom_point(aes(x=df_sub$totale_ospedalizzati[df_sub$data >= data_max_nuovi_positivi$data], y=nuovi_positivi_max_split2$nuovi_positivi), color="orange") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("nuovi_positivi")
+
+plot2 <- ggplot(df_sub, aes(x=totale_ospedalizzati, y=dimessi_guariti_per_day)) +
+  geom_point(color="green") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("dimessi_guariti_per_day")
+
+plot3 <- ggplot(df_sub, aes(x=totale_ospedalizzati, y=deceduti_per_day)) +
+  geom_point(color="black") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("deceduti_per_day")
+
+data_max_nuovi_positivi=df_sub[which.max(df_sub$mean_nuovi_positivi),]
+nuovi_positivi_max_split1 <- df_sub[df_sub$data < data_max_nuovi_positivi$data, ]
+nuovi_positivi_max_split2 <- df_sub[df_sub$data >= data_max_nuovi_positivi$data, ]
+
+plot4 <- ggplot() +
+  geom_point(aes(x=df_sub$totale_ospedalizzati[df_sub$data < data_max_nuovi_positivi$data], y=nuovi_positivi_max_split1$mean_nuovi_positivi), color="red") + 
+  geom_point(aes(x=df_sub$totale_ospedalizzati[df_sub$data >= data_max_nuovi_positivi$data], y=nuovi_positivi_max_split2$mean_nuovi_positivi), color="orange") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("mean_nuovi_positivi")
+
+plot5 <- ggplot(df_sub, aes(x=totale_ospedalizzati, y=mean_dimessi_guariti_per_day)) +
+  geom_point(color="green") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("mean_dimessi_guariti_per_day")
+library(ggpubr)
+ggarrange(plot1, plot2, plot3, plot4, plot5, ncol = 3, nrow = 3)
+``` 
+
+Look the histograms
+
+```{r, echo=FALSE, fig.width=10, fig.height=6}
+par(mfrow=c(4,2))
+hist(df_sub$totale_ospedalizzati, probability=TRUE, breaks=20)
+hist(df_sub$deceduti_per_day, probability=TRUE, breaks=20)
+hist(df_sub$nuovi_positivi, probability=TRUE, breaks=20)
+hist(df_sub$dimessi_guariti_per_day, probability=TRUE, breaks=20)
+hist(df_sub$mean_nuovi_positivi, probability=TRUE, breaks=20)
+hist(df_sub$mean_dimessi_guariti_per_day, probability=TRUE, breaks=20)
+hist(df_sub$rt, probability=TRUE, breaks=20)
+```
+
+Look the histograms with LOG
+
+```{r, echo=FALSE, fig.width=6, fig.height=6}
+par(mfrow=c(3,2))
+hist(log(df_sub$totale_ospedalizzati), probability=TRUE, breaks=20)
+hist(df_sub$deceduti_per_day, probability=TRUE, breaks=20)
+hist(df_sub$nuovi_positivi, probability=TRUE, breaks=20)
+hist(log(df_sub$dimessi_guariti_per_day), probability=TRUE, breaks=20)
+hist(log(df_sub$mean_nuovi_positivi), probability=TRUE, breaks=20)
+hist(log(df_sub$mean_dimessi_guariti_per_day), probability=TRUE, breaks=20)
+```
+
+Plotting the variable of interest:
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=sqrt(totale_ospedalizzati))) +
+  geom_line() +
+  xlab("Date") 
+```
+
+# Best models selection
+
+##  GLM1 - Poisson - 3 covariates, 1 log
+
+**OSS: always log(mean_dimessi_guariti_per_day) since Deviance Residuals are much worse (4 median) and AIC too with Residual deviance.**
+
+```{r, echo=FALSE}
+glm1 <- glm(totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day) + deceduti_per_day, data=df_sub, poisson)
+summary(glm1)
+```
+OSS.1 **deceduti_per_day is significant**
+AIC: 54961.
+Deviance Residuals good normality.
+
+Checking model fit:
+
+```{r}
+{plot(density(df_sub$totale_ospedalizzati), main='glm1')
+lines(density(predict(glm1, type='response')), col='red')}
+scatter.smooth(predict(glm1, type='response'), rstandard(glm1, type='deviance'), col='gray')
+scatter.smooth(predict(glm1), resid(glm1, type='working'), col='gray')
+{qqnorm(qresid(glm1),ylim=c(-40,10),xlim=c(-3,1))}
+hist(residuals(glm1, type = "deviance"), probability = T, breaks = 20)
+```
+
+**I see pattern in residuals vs fitted.**
+
+```{r, echo=FALSE}
+glm1_avg <- glm(totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day) + deceduti_per_day, data=df_sub, poisson)
+summary(glm1_avg)
+```
+OSS.1 **deceduti_per_day is still significant**
+AIC: 15906 (much better than 54961).
+Deviance Residuals somewhat good normality.
+
+Checking model fit:
+
+```{r}
+{plot(density(df_sub$totale_ospedalizzati), main='glm1_avg')
+lines(density(predict(glm1_avg, type='response')), col='red')}
+scatter.smooth(predict(glm1_avg, type='response'), rstandard(glm1_avg, type='deviance'), col='gray')
+scatter.smooth(predict(glm1_avg), resid(glm1_avg, type='working'), col='gray')
+{qqnorm(qresid(glm1_avg),ylim=c(-30,10),xlim=c(-3,1)); qqline(qresid(glm1_avg))}
+hist(residuals(glm1_avg, type = "deviance"), probability = T, breaks = 20)
+```
+
+**Like glm1** still see pattern in residuals vs fitted.
+
+Adding **rt squared interaction with LOG(mean dimessi guariti)** (-> IF YOU ADD RT IS EVEN BETTER! Done by Valeria)
+OSS. No need to use sqrt because it's worse AIC, Deviance Resisulas and plots.
+
+```{r, echo=FALSE}
+glm1_avg.rt <- glm(totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*I(rt^2) + rt + deceduti_per_day  , data=df_sub, poisson)
+summary(glm1_avg.rt)
+```
+
+OSS.1 **deceduti_per_day is more significant**
+AIC: 7715.7 (much better than latest 15906).
+Residual deviance:   6459.4.
+Deviance Residuals somewhat good normality, better than before.
+
+Checking model fit:
+
+```{r}
+{plot(density(df_sub$totale_ospedalizzati), main='glm1_avg')
+lines(density(predict(glm1_avg.rt, type='response')), col='red')}
+scatter.smooth(predict(glm1_avg.rt, type='response'), rstandard(glm1_avg.rt, type='deviance'), col='gray')
+scatter.smooth(predict(glm1_avg.rt), resid(glm1_avg.rt, type='working'), col='gray')
+{qqnorm(qresid(glm1_avg.rt),ylim=c(-30,10),xlim=c(-3,2)); qqline(qresid(glm1_avg.rt))}
+hist(residuals(glm1_avg.rt, type = "deviance"), probability = T, breaks = 20)
+```
+
+**I DONT see pattern in residuals vs fitted anymore!**
+
+Overdispertion in all models:
+
+```{r}
+check_overdispersion(glm1)
+check_overdispersion(glm1_avg)
+check_overdispersion(glm1_avg.rt)
+```
+```{r echo=FALSE}
+AIC(glm1, glm1_avg, glm1_avg.rt) #glm1_avg.rt in finale
+```
+
+###  GLM - QuasiPoisson2 - 2 covariates, 1 log
+
+**OSS:deceduti_per_day not significant.**
+
+**OSS:  log(mean_dimessi_guariti_per_day) since Deviance Residuals are much worse (5 median) and Residual deviance too.**
+
+```{r}
+qp.glm2_avg<- glm(totale_ospedalizzati ~ mean_nuovi_positivi+ log(mean_dimessi_guariti_per_day), data=df_sub, quasipoisson)
+summary(qp.glm2_avg)
+```
+
+OSS.1 **deceduti_per_day is not significant**
+AIC: NA. BUT Residual deviance:  14687, slightly worse than glm1_avg.rt, but like glm1_avg.
+Deviance Residuals somewhat good normality, like glm1_avg.
+
+Checking model fit:
+
+```{r}
+{plot(density(df_sub$totale_ospedalizzati), main='glm1_avg')
+lines(density(predict(qp.glm2_avg, type='response')), col='red')}
+scatter.smooth(predict(qp.glm2_avg, type='response'), rstandard(qp.glm2_avg, type='deviance'), col='gray')
+scatter.smooth(predict(qp.glm2_avg), resid(qp.glm2_avg, type='working'), col='gray')
+{qqnorm(qresid(qp.glm2_avg),ylim=c(-4,2),xlim=c(-3,4)); qqline(qresid(qp.glm2_avg))}
+plot(df_sub$mean_dimessi_guariti_per_day, qp.glm2_avg$residuals)
+plot(df_sub$mean_nuovi_positivi, qp.glm2_avg$residuals)
+hist(residuals(qp.glm2_avg, type = "deviance"), probability = T, breaks = 20)
+```
+
+**Like glm1_avg** still see pattern in residuals vs fitted.
+
+Adding **rt squared interaction with SQRT(mean dimessi guariti) and rt(alone)**:
+
+```{r}
+qp.glm2_avg.rt<- glm(totale_ospedalizzati ~ mean_nuovi_positivi+ sqrt(mean_dimessi_guariti_per_day)*I(rt^2) + rt, data=df_sub, quasipoisson)
+summary(qp.glm2_avg.rt)
+```
+
+OSS. **If I use log(mean_dimessi_guariti_per_day) like in poisson glm, it is not significant, although better Residual deviance and QQ/Residuals vs fitted plots.**
+OSS.1 **deceduti_per_day is not significant**.
+AIC: NA. BUT Residual deviance:  10712, slightly better than qp.glm2_avg.
+Deviance Residuals good normality, better than qp.glm2_avg.
+
+Checking model fit:
+
+```{r}
+hist(residuals(qp.glm2_avg.rt, type = "deviance"), probability = T, breaks = 20)
+{plot(density(df_sub$totale_ospedalizzati), main='glm1_avg')
+lines(density(predict(qp.glm2_avg.rt, type='response')), col='red')}
+scatter.smooth(predict(qp.glm2_avg.rt, type='response'), rstandard(qp.glm2_avg.rt, type='deviance'), col='gray')
+scatter.smooth(predict(qp.glm2_avg.rt), resid(qp.glm2_avg.rt, type='working'), col='gray')
+{qqnorm(qresid(qp.glm2_avg.rt),ylim=c(-4,3),xlim=c(-3,4)); qqline(qresid(qp.glm2_avg.rt))}
+plot(df_sub$mean_dimessi_guariti_per_day, qp.glm2_avg.rt$residuals)
+plot(df_sub$mean_nuovi_positivi, qp.glm2_avg.rt$residuals)
+```
+
+**Like glm1_avg.rt** we see no pattern in residuals vs fitted.
+
+## GLM - Gamma
+
+If I use sqrt with these two, it's worse like in Poissons. (In QS was better)
+
+```{r, echo=FALSE}
+gamma.glm2_avg <- glm(totale_ospedalizzati ~ mean_nuovi_positivi+ log(mean_dimessi_guariti_per_day), data=df_sub, family = Gamma(link = "log"))
+summary(gamma.glm2_avg)
+```
+
+OSS.1 **deceduti_per_day is not significant**.
+AIC: 2047, **better respect Poisson**. 
+Residual deviance:  7.8069, **very low**.
+Deviance Residuals somewhat good normality, qp.glm2_avg.rt is better.
+
+Checking model fit:
+
+```{r}
+hist(residuals(gamma.glm2_avg, type = "deviance"), probability = T, breaks = 20)
+{plot(density(df_sub$totale_ospedalizzati), main='gamma.glm2_avg')
+lines(density(predict(gamma.glm2_avg, type='response')), col='red')}
+scatter.smooth(predict(gamma.glm2_avg, type='response'), rstandard(gamma.glm2_avg, type='deviance'), col='gray')
+scatter.smooth(predict(gamma.glm2_avg), resid(gamma.glm2_avg, type='working'), col='gray')
+{qqnorm(qresid(gamma.glm2_avg),ylim=c(-4,2),xlim=c(-3,2)); qqline(qresid(gamma.glm2_avg))}
+plot(df_sub$mean_dimessi_guariti_per_day, gamma.glm2_avg$residuals)
+plot(df_sub$mean_nuovi_positivi, gamma.glm2_avg$residuals)
+```
+
+**Like poisson without rt,** we see pattern in residuals vs fitted, like alll graphs without rt.
+
+Adding **rt squared interaction with SQRT(mean dimessi guariti) and interaction and alone**.
+If I don't add rt alone is worse.
+
+```{r, echo=FALSE}
+gamma.glm2_avg.rt <- glm(totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*I(rt^2) + rt, data=df_sub, family = Gamma(link = "log"))
+summary(gamma.glm2_avg.rt)
+```
+
+OSS.1 **deceduti_per_day is not significant + mean_nuovi_positivi not so significant!!!!!**
+AIC: 1966.4, **better than before**. 
+Residual deviance:  3.903, **very very low**.
+Deviance Residuals somewhat worse.
+
+Checking model fit:
+
+```{r}
+hist(residuals(gamma.glm2_avg.rt, type = "deviance"), probability = T, breaks = 20)
+{plot(density(df_sub$totale_ospedalizzati), main='gamma.glm2_avg.rt')
+lines(density(predict(gamma.glm2_avg.rt, type='response')), col='red')}
+scatter.smooth(predict(gamma.glm2_avg.rt, type='response'), rstandard(gamma.glm2_avg.rt, type='deviance'), col='gray')
+scatter.smooth(predict(gamma.glm2_avg.rt), resid(gamma.glm2_avg.rt, type='working'), col='gray')
+{qqnorm(qresid(gamma.glm2_avg.rt),ylim=c(-4,2),xlim=c(-3,2)); qqline(qresid(gamma.glm2_avg.rt))}
+plot(df_sub$mean_dimessi_guariti_per_day, gamma.glm2_avg.rt$residuals)
+plot(df_sub$mean_nuovi_positivi, gamma.glm2_avg.rt$residuals)
+```
+
+**Like poisson with rt,** we see no pattern in residuals vs fitted, BUT QQ plot worse.
+
+Try **rt squared interaction with SQRT(mean dimessi guariti) and rt interaction + alone** 
+If I don't add rt alone is worse.
+
+```{r, echo=FALSE}
+gamma.glm3_avg.rt <- glm(totale_ospedalizzati ~ mean_nuovi_positivi + sqrt(mean_dimessi_guariti_per_day)*I(rt^2) + rt , data=df_sub, family = Gamma(link = "log"))
+summary(gamma.glm3_avg.rt)
+```
+
+OSS.1 **deceduti_per_day is not significant + mean_nuovi_positivi not significant!!!!!**
+AIC: 2003.2, **log was lower**. 
+Residual deviance:  5.240, **log was lower**.
+Deviance Residuals somewhat worse, like log.
+
+Checking model fit:
+
+```{r}
+hist(residuals(gamma.glm3_avg.rt, type = "deviance"), probability = T, breaks = 20)
+{plot(density(df_sub$totale_ospedalizzati), main='gamma.glm3_avg.rt')
+lines(density(predict(gamma.glm3_avg.rt, type='response')), col='red')}
+scatter.smooth(predict(gamma.glm3_avg.rt, type='response'), rstandard(gamma.glm3_avg.rt, type='deviance'), col='gray')
+scatter.smooth(predict(gamma.glm3_avg.rt), resid(gamma.glm3_avg.rt, type='working'), col='gray')
+{qqnorm(qresid(gamma.glm3_avg.rt),ylim=c(-4,2),xlim=c(-3,2)); qqline(qresid(gamma.glm3_avg.rt))}
+plot(df_sub$mean_dimessi_guariti_per_day, gamma.glm3_avg.rt$residuals)
+plot(df_sub$mean_nuovi_positivi, gamma.glm3_avg.rt$residuals)
+```
+
+**Like poisson with rt,** we see no pattern in residuals vs fitted, BUT QQ plot worse (more than log!).
+
+## Recap GLM
+
+```{r}
+AIC(glm1_avg,glm1_avg.rt,qp.glm2_avg,qp.glm2_avg.rt,gamma.glm2_avg,gamma.glm2_avg.rt,gamma.glm3_avg.rt)
+print("Real Residual Deviance qp.glm2_avg:")
+print(sum(    residuals.glm(qp.glm2_avg, "deviance")^2)/summary(qp.glm2_avg)$dispersion)
+print("Real Residual Deviance qp.glm2_avg.rt:")
+print(sum(    residuals.glm(qp.glm2_avg.rt, "deviance")^2)/summary(qp.glm2_avg.rt)$dispersion)
+
+```
+
+## GAM Poisson - loglink
+
+```{r, echo=FALSE}
+gam2_avg <- gam(totale_ospedalizzati ~ s(mean_nuovi_positivi,bs="ps",k=20) + s(mean_dimessi_guariti_per_day,bs="ps",k=20) , data=df_sub, family = poisson(link = log),method="REML",)
+summary(gam2_avg)
+print("AIC")
+print(AIC(gam2_avg))
+print(summary(gam2_avg)$sp.criterion)
+```
+```{r}
+summary(gam2_avg)$sp.criterion
+#gam2_avg$residuals
+#plot(df_sub$totale_ospedalizzati, gam2_avg$residuals)
+#plot(df_sub$totale_ospedalizzati, gam2_avg$fitted.values)
+{plot(density(df_sub$totale_ospedalizzati), main='gam2_avg')
+lines(density(predict(gam2_avg, type='response')), col='red')}
+plot(gam2_avg)
+gam.check(gam2_avg)
+```
+
+Adding **rt --> Not useful**:
+
+```{r, echo=FALSE}
+gam2_avg.rt <- gam(totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2) , data=df_sub, family = poisson(link = log),method="REML",)
+summary(gam2_avg.rt)
+print("AIC")
+print(AIC(gam2_avg.rt))
+print(summary(gam2_avg.rt)$sp.criterion)
+```
+```{r}
+summary(gam2_avg.rt)$sp.criterion
+#gam2_avg$residuals
+#plot(df_sub$totale_ospedalizzati, gam2_avg$residuals)
+#plot(df_sub$totale_ospedalizzati, gam2_avg$fitted.values)
+{plot(density(df_sub$totale_ospedalizzati), main='gam2_avg.rt')
+lines(density(predict(gam2_avg.rt, type='response')), col='red')}
+plot(gam2_avg.rt)
+gam.check(gam2_avg.rt)
+```
+
+Prova Valeria:
+
+```{r, echo=FALSE}
+gam3_avg_rt <- gam(totale_ospedalizzati ~ mean_nuovi_positivi + s(mean_dimessi_guariti_per_day) + deceduti_per_day*I(rt^2) + rt, data=df_sub, family = poisson(link = log),method="REML",)
+summary(gam3_avg_rt)
+print("AIC")
+print(AIC(gam3_avg_rt))
+print(summary(gam3_avg_rt)$sp.criterion)
+```
+
+
+```{r}
+summary(gam3_avg_rt)$sp.criterion
+#gam2_avg$residuals
+#plot(df_sub$totale_ospedalizzati, gam2_avg$residuals)
+#plot(df_sub$totale_ospedalizzati, gam2_avg$fitted.values)
+{plot(density(df_sub$totale_ospedalizzati), main='gam3_avg_rt')
+lines(density(predict(gam3_avg_rt, type='response')), col='red')}
+plot(gam3_avg_rt)
+gam.check(gam3_avg_rt)
+```
+
+```{r}
+AIC(gam2_avg, gam2_avg.rt, gam3_avg_rt)
+```
+
+## GAM Gamma - loglink (better than gam poisson)
+
+```{r, echo=FALSE}
+gam2_avg_gamma <- gam(totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) , data=df_sub, family = Gamma(link = log),method="REML")
+summary(gam2_avg_gamma)
+print("AIC")
+print(AIC(gam2_avg_gamma))
+```
+
+```{r}
+plot(gam2_avg_gamma,residuals=TRUE,pch=19)
+gam.check(gam2_avg_gamma)
+{plot(density(df_sub$totale_ospedalizzati), main='gam2_avg_gamma')
+lines(density(predict(gam2_avg_gamma, type='response')), col='red')}
+```
+
+Adding **rt --> Not useful**: -> AGGIUNTO DA VALERIA
+
+```{r, echo=FALSE}
+gam2_avg_gamma.rt <- gam(totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2) , data=df_sub, family = Gamma(link = log),method="REML")
+summary(gam2_avg_gamma.rt)
+print("AIC")
+print(AIC(gam2_avg_gamma.rt))
+print(summary(gam2_avg_gamma.rt)$sp.criterion)
+```
+
+```{r}
+plot(gam2_avg_gamma.rt,residuals=TRUE,pch=19)
+gam.check(gam2_avg_gamma.rt)
+{plot(density(df_sub$totale_ospedalizzati), main='gam2_avg_gamma.rt')
+lines(density(predict(gam2_avg_gamma.rt, type='response')), col='red')}
+```
+
+## Recap GAM
+
+Migliore sembra essere Gamma di Poisson, ed effattivamente i qqplot sono migliori.
+
+```{r}
+AIC(gam2_avg, gam2_avg.rt,gam2_avg_gamma, gam2_avg_gamma.rt)
+REML <- c(summary(gam2_avg)$sp.criterion["REML"],summary(gam2_avg.rt)$sp.criterion["REML"],
+      summary(gam2_avg_gamma)$sp.criterion["REML"],summary(gam2_avg_gamma.rt)$sp.criterion["REML"])
+REML
+```
+
+## PREDICTION with rt models
+Extract prediction data
+
+```{r}
+df_pred <- df_lomb[df_lomb$data >= "2021-02-02T00:00:00" & df_lomb$data <= "2021-02-16T00:00:00",]
+df_pred <-subset(df_pred,select=-c(giorno_settimana))
+```
+
+## Predict GLM poisson
+
+```{r, echo=FALSE}
+glm1_avg_pred<-predict(glm1_avg, newdata = df_pred, type = "response", interval = "prediction", level=0.95)
+
+mse_glm1<-mean((df_pred$totale_ospedalizzati - as.numeric(glm1_avg_pred))^2)
+
+df_pred$glm1_avg_pred<-as.numeric(glm1_avg_pred)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico <-subset(df_grafico,select=-c(giorno_settimana))
+df_grafico$glm1_avg_pred<-df_sub$totale_ospedalizzati
+#df_grafico$glm1_avg_<-df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='red') ) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm1_avg_pred, col='black')) 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+               
+
+```
+
+*RT*
+
+```{r, echo=FALSE}
+glm1_avg_pred_rt<-predict(glm1_avg.rt, newdata = df_pred, type = "response", interval = "prediction", level=0.95)
+
+mse_glm1_rt<-mean((df_pred$totale_ospedalizzati - as.numeric(glm1_avg_pred_rt))^2)
+
+df_pred$glm1_avg_pred_rt<-as.numeric(glm1_avg_pred_rt)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+
+df_grafico$glm1_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico$glm1_avg_pred_rt<-df_sub$totale_ospedalizzati
+#df_grafico$glm1_avg_<-df_sub$totale_ospedalizzati
+df_grafico <-subset(df_grafico,select=-c(giorno_settimana))
+df_grafico<-rbind(df_grafico, df_pred)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='red') ) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm1_avg_pred_rt, col='black')) 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+               
+```
+
+## Predict GLM QPoisson
+
+```{r}
+qp.glm2_avg_pred<-predict(qp.glm2_avg, newdata = df_pred, type = "response")
+
+mse_qp.glm2<-mean((df_pred$totale_ospedalizzati - as.numeric(qp.glm2_avg_pred))^2)
+
+df_pred$qp.glm2_avg_pred<-as.numeric(qp.glm2_avg_pred)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$glm1_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico$glm1_avg_pred_rt<-df_sub$totale_ospedalizzati
+df_grafico$qp.glm2_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico <-subset(df_grafico,select=-c(giorno_settimana))
+df_grafico<-rbind(df_grafico, df_pred)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='red') ) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=qp.glm2_avg_pred, col='black')) 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+               
+
+```
+
+**RT**
+
+```{r}
+qp.glm2_avg_pred_rt<-predict(qp.glm2_avg.rt, newdata = df_pred, type = "response")
+
+mse_qp.glm2<-mean((df_pred$totale_ospedalizzati - as.numeric(qp.glm2_avg_pred_rt))^2)
+
+df_pred$qp.glm2_avg_pred_rt<-as.numeric(qp.glm2_avg_pred_rt)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$glm1_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico$glm1_avg_pred_rt<-df_sub$totale_ospedalizzati
+df_grafico$qp.glm2_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico$qp.glm2_avg_pred_rt<-df_sub$totale_ospedalizzati
+df_grafico <-subset(df_grafico,select=-c(giorno_settimana))
+df_grafico<-rbind(df_grafico, df_pred)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='red') ) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=qp.glm2_avg_pred_rt, col='black')) 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+               
+
+```
+
+## Predict Gamma GLM
+
+```{r}
+gamma.glm2_avg_pred<-predict(gamma.glm2_avg, newdata = df_pred, type = "response")
+
+mse_gamma.glm2<-mean((df_pred$totale_ospedalizzati - as.numeric(gamma.glm2_avg_pred))^2)
+
+df_pred$gamma.glm2_avg_pred<-as.numeric(gamma.glm2_avg_pred)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$glm1_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico$glm1_avg_pred_rt<-df_sub$totale_ospedalizzati
+df_grafico$qp.glm2_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico$qp.glm2_avg_pred_rt<-df_sub$totale_ospedalizzati
+df_grafico$gamma.glm2_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico <-subset(df_grafico,select=-c(giorno_settimana))
+df_grafico<-rbind(df_grafico, df_pred)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='red') ) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=gamma.glm2_avg_pred, col='black')) 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+               
+
+```
+```{r}
+gamma.glm2_avg_pred_rt<-predict(gamma.glm2_avg.rt, newdata = df_pred, type = "response")
+
+mse_gamma.glm2<-mean((df_pred$totale_ospedalizzati - as.numeric(gamma.glm2_avg_pred_rt))^2)
+
+df_pred$gamma.glm2_avg_pred_rt<-as.numeric(gamma.glm2_avg_pred_rt)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$glm1_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico$glm1_avg_pred_rt<-df_sub$totale_ospedalizzati
+df_grafico$qp.glm2_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico$qp.glm2_avg_pred_rt<-df_sub$totale_ospedalizzati
+df_grafico$gamma.glm2_avg_pred<-df_sub$totale_ospedalizzati
+df_grafico$gamma.glm2_avg_pred_rt<-df_sub$totale_ospedalizzati
+df_grafico <-subset(df_grafico,select=-c(giorno_settimana))
+df_grafico<-rbind(df_grafico, df_pred)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='red') ) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=gamma.glm2_avg_pred_rt, col='black')) 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+               
+#save.image(file='data_summary_v1.RData')
+```

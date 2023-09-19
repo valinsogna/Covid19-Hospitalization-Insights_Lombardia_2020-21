@@ -1,0 +1,174 @@
+
+```{r}
+
+#GAM POISSON
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$gam_poisson<-as.numeric(gam_poisson)
+
+df_grafico<-df_sub
+df_grafico$gam_poisson <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='Real') ) +
+  ylab("Totale ospedalizzati") +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=gam_poisson, col="Gam Poisson") ) +
+    geom_line() +
+    scale_color_manual(name="Variable", values = c(1:2))
+
+
+
+
+# GAM GAMMA
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$gam2_gamma<-as.numeric(gam2_gamma)
+
+df_grafico<-df_sub
+df_grafico$gam2_gamma <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='Real') ) +
+  ylab("Totale ospedalizzati") +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=gam2_gamma, col="Gam Gamma") ) +
+    geom_line() +
+    scale_color_manual(name="Variable", values = c(1:2))
+
+
+
+
+# GLM GAMMA
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$glm_gamma<-as.numeric(glm_gamma)
+
+df_grafico<-df_sub
+df_grafico$glm_gamma <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='Real') ) +
+  ylab("Totale ospedalizzati") +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm_gamma, col="Glm Gamma") ) +
+    geom_line() +
+    scale_color_manual(name="Variable", values = c(1:2))
+
+
+
+# #QUASI POSSIN GLM
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$glm_qs_poisson<-as.numeric(glm_qs_poisson)
+
+df_grafico<-df_sub
+df_grafico$glm_qs_poisson <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='Real') ) +
+  ylab("Totale ospedalizzati") +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm_qs_poisson, col="Glm Quasi Poisson") ) +
+    geom_line()+
+    scale_color_manual(name="Variable", values = c(1:2))
+
+
+
+# #GAM GAMMA DUMMY
+# df_pred_gml_dummy <- df_pred
+# df_pred_gml_dummy$gam_gamma_dummy<-as.numeric(gam_gamma_dummy)
+# 
+# df_grafico<-df_sub
+# df_grafico$gam_gamma_dummy <- df_sub$totale_ospedalizzati
+# df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+# 
+# ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) +
+#   
+#   xlab("Date") +
+#   scale_y_continuous(breaks = seq(0,9500,by=1000))+
+#   geom_line(aes(x=as.Date(data), y=gam_gamma_dummy, col="Gam Gamma DUMMY") ) +
+#     geom_line() 
+
+
+
+
+# GLM GAMMA DUMMY
+# df_pred_gml_dummy <- df_pred
+# df_pred_gml_dummy$glm_gamma_dummy<-as.numeric(glm_gamma_dummy)
+# 
+# df_grafico<-df_sub
+# df_grafico$glm_gamma_dummy <- df_sub$totale_ospedalizzati
+# df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+# 
+# ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) +
+#   
+#   xlab("Date") +
+#   scale_y_continuous(breaks = seq(0,9500,by=1000))+
+#   geom_line(aes(x=as.Date(data), y=glm_gamma_dummy, col="Gam Gamma DUMMY") ) +
+#     geom_line() 
+
+
+
+#QUASI POISSON DUMMY
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$glm_qs_poisson_dummy<-as.numeric(glm_qs_poisson_dummy)
+
+df_grafico<-df_sub
+df_grafico$glm_qs_poisson_dummy <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='Real') ) +
+  ylab("Totale ospedalizzati") +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm_qs_poisson_dummy, col="Glm Quasi Poisson\nwith dummy") ) +
+    geom_line() +
+    scale_color_manual(name="Variable", values = c(1:2))
+
+
+
+
+#GLM GAMMA DUMMY
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$glm_gamma_dummy<-as.numeric(glm_gamma_dummy)
+
+df_grafico<-df_sub
+df_grafico$glm_gamma_dummy <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='Real') ) +
+  ylab("Totale ospedalizzati") +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm_gamma_dummy, col="Glm Gamma\nwith dummy") ) +
+    geom_line() +
+    scale_color_manual(name="Variable", values = c(1:2))
+
+
+```
+
+
+## Root mean square error
+
+```{r}
+metrics <- data.frame(
+    Model =  c("Gam Poisson", "Gam Gamma", "Glm Gamma", "Glm quasi poisson with dummy", "Glm Gamma with dummy")
+)
+
+rmse <- c()
+
+rmse <- append(rmse, sqrt(mean((df_pred$totale_ospedalizzati - as.numeric(gam_poisson))^2)))
+rmse <- append(rmse, sqrt(mean((df_pred$totale_ospedalizzati - as.numeric(gam2_gamma))^2)))
+rmse <- append(rmse, sqrt(mean((df_pred$totale_ospedalizzati - as.numeric(glm_gamma))^2)))
+rmse <- append(rmse, sqrt(mean((df_pred$totale_ospedalizzati - as.numeric(glm_qs_poisson_dummy))^2)))
+rmse <- append(rmse, sqrt(mean((df_pred$totale_ospedalizzati - as.numeric(glm_gamma_dummy))^2)))
+
+metrics$RMSE <- rmse
+metrics
+```
+
+
+
+
+             

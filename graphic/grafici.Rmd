@@ -1,0 +1,303 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+### gam Poisson
+
+```{r, echo=FALSE}
+gam2_avg.rt <- gam(totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2) , data=df_sub, family = poisson(link = log),method="REML",)
+summary(gam2_avg.rt)
+print("AIC")
+print(AIC(gam2_avg.rt))
+print(summary(gam2_avg.rt)$sp.criterion)
+```
+
+
+## PROVE
+
+```{r, echo=FALSE}
+gam_poisson<-predict(gam2_avg.rt, newdata = df_pred, type = "response", interval = "prediction", level=0.95)
+
+mse_glm1_dummy<-mean((df_pred$totale_ospedalizzati - as.numeric(gam_poisson))^2)
+
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$gam_poisson<-as.numeric(gam_poisson)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$gam_poisson <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+plot1<- ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) +
+  
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=gam_poisson, col="Gam poisson") ) +
+    geom_line() 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+               
+
+```
+
+
+### gam Gamma log link
+
+
+
+```{r, echo=FALSE}
+gam2_avg_gamma.rt <- gam(totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2) , data=df_sub, family = Gamma(link = log),method="REML")
+summary(gam2_avg_gamma.rt)
+print("AIC")
+print(AIC(gam2_avg_gamma.rt))
+print(summary(gam2_avg_gamma.rt)$sp.criterion)
+```
+
+
+
+```{r, echo=FALSE}
+gam2_gamma<-predict(gam2_avg_gamma.rt, newdata = df_pred, type = "response", interval = "prediction", level=0.95)
+# gam2_gamma<-predict(gam2_avg_gamma.rt, newdata = df_pred, interval = "prediction", level=0.95, sd=T)
+
+mse_glm1_dummy<-mean((df_pred$totale_ospedalizzati - as.numeric(gam2_gamma))^2)
+
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$gam2_gamma<-as.numeric(gam2_gamma)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$gam2_gamma <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) +
+  
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=gam2_gamma, col="Gam gamma") ) +
+    geom_line() 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+```
+
+
+
+### glm Gamma log link
+
+```{r, echo=FALSE}
+gamma.glm2_avg.rt <- glm(totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*I(rt^2) + rt, data=df_sub, family = Gamma(link = "log"))
+summary(gamma.glm2_avg.rt)
+```
+
+
+```{r, echo=FALSE}
+glm_gamma<-predict(gamma.glm2_avg.rt, newdata = df_pred, type = "response", interval = "prediction", level=0.95)
+
+mse_glm1_dummy<-mean((df_pred$totale_ospedalizzati - as.numeric(glm_gamma))^2)
+
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$glm_gamma<-as.numeric(glm_gamma)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$glm_gamma <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) +
+  
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm_gamma, col="glm gamma") ) +
+    geom_line() 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+```
+
+
+
+### qs Poisson
+
+```{r}
+qp.glm2_avg.rt<- glm(totale_ospedalizzati ~ mean_nuovi_positivi+ sqrt(mean_dimessi_guariti_per_day)*I(rt^2) + rt, data=df_sub, quasipoisson)
+summary(qp.glm2_avg.rt)
+```
+
+
+
+```{r, echo=FALSE}
+glm_qs_poisson<-predict(qp.glm2_avg.rt, newdata = df_pred, type = "response", interval = "prediction", level=0.95)
+
+mse_glm1_dummy<-mean((df_pred$totale_ospedalizzati - as.numeric(glm_qs_poisson))^2)
+
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$glm_qs_poisson<-as.numeric(glm_qs_poisson)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$glm_qs_poisson <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) +
+  
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm_qs_poisson, col="quasi poisson") ) +
+    geom_line() 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+```
+
+
+
+<!-- ### gam Gamma log linkn DUMMY -->
+
+<!-- ```{r, echo=FALSE} -->
+<!-- gam2_avg_gamma.rt_dummy <- gam(totale_ospedalizzati ~ s(mean_nuovi_positivi) + s(mean_dimessi_guariti_per_day) +I(rt^2) + dummy , data=df_sub, family = Gamma(link = log),method="REML") -->
+<!-- summary(gam2_avg_gamma.rt) -->
+<!-- print("AIC") -->
+<!-- print(AIC(gam2_avg_gamma.rt)) -->
+<!-- print(summary(gam2_avg_gamma.rt)$sp.criterion) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- plot(gam2_avg_gamma.rt,residuals=TRUE,pch=19) -->
+<!-- gam.check(gam2_avg_gamma.rt) -->
+<!-- {plot(density(df_sub$totale_ospedalizzati), main='gam2_avg_gamma.rt') -->
+<!-- lines(density(predict(gam2_avg_gamma.rt, type='response')), col='red')} -->
+<!-- ``` -->
+
+
+<!-- ```{r, echo=FALSE} -->
+<!-- gam_gamma_dummy<-predict(gam2_avg_gamma.rt_dummy, newdata = df_pred, type = "response", interval = "prediction", level=0.95) -->
+
+<!-- mse_glm1_dummy<-mean((df_pred$totale_ospedalizzati - as.numeric(gam_gamma_dummy))^2) -->
+
+<!-- df_pred_gml_dummy <- df_pred -->
+<!-- df_pred_gml_dummy$gam_gamma_dummy<-as.numeric(gam_gamma_dummy) -->
+
+<!-- ``` -->
+
+<!-- ```{r, echo=FALSE} -->
+<!-- df_grafico<-df_sub -->
+<!-- df_grafico$gam_gamma_dummy <- df_sub$totale_ospedalizzati -->
+<!-- df_grafico<-rbind(df_grafico, df_pred_gml_dummy) -->
+
+<!-- ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) + -->
+
+<!--   xlab("Date") + -->
+<!--   scale_y_continuous(breaks = seq(0,9500,by=1000))+ -->
+<!--   geom_line(aes(x=as.Date(data), y=gam_gamma_dummy, col="Gam Gamma DUMMY") ) + -->
+<!--     geom_line()  -->
+<!--     # geom_errorbar(aes(ymin = lower, ymax = upper)) -->
+<!-- ``` -->
+
+
+
+<!-- ### glm Gamma log link DUMMY without rt -->
+
+<!-- <!-- ```{r, echo=FALSE} --> -->
+<!-- <!-- gamma.glm2_avg.rt_dummy <- glm(totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*dummy + rt, data=df_sub, family = Gamma(link = "log")) --> -->
+<!-- <!-- summary(gamma.glm2_avg.rt_dummy) --> -->
+<!-- <!-- ``` --> -->
+
+
+<!-- ```{r, echo=FALSE} -->
+<!-- glm_gamma_dummy<-predict(gamma.glm2_avg.rt_dummy, newdata = df_pred, type = "response", interval = "prediction", level=0.95) -->
+
+<!-- mse_glm1_dummy<-mean((df_pred$totale_ospedalizzati - as.numeric(glm_gamma_dummy))^2) -->
+
+<!-- df_pred_gml_dummy <- df_pred -->
+<!-- df_pred_gml_dummy$glm_gamma_dummy<-as.numeric(glm_gamma_dummy) -->
+
+<!-- ``` -->
+
+<!-- ```{r, echo=FALSE} -->
+<!-- df_grafico<-df_sub -->
+<!-- df_grafico$glm_gamma_dummy <- df_sub$totale_ospedalizzati -->
+<!-- df_grafico<-rbind(df_grafico, df_pred_gml_dummy) -->
+
+<!-- ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) + -->
+
+<!--   xlab("Date") + -->
+<!--   scale_y_continuous(breaks = seq(0,9500,by=1000))+ -->
+<!--   geom_line(aes(x=as.Date(data), y=glm_gamma_dummy, col="Gam Gamma DUMMY") ) + -->
+<!--     geom_line()  -->
+<!--     # geom_errorbar(aes(ymin = lower, ymax = upper)) -->
+<!-- ``` -->
+
+
+
+
+### qs Poisson DUMMY
+
+```{r}
+qp.glm2_avg.rt_dummy<- glm(totale_ospedalizzati ~ mean_nuovi_positivi+ sqrt(mean_dimessi_guariti_per_day)*dummy + rt, data=df_sub, quasipoisson)
+summary(qp.glm2_avg.rt_dummy)
+```
+
+
+
+```{r, echo=FALSE}
+glm_qs_poisson_dummy<-predict(qp.glm2_avg.rt_dummy, newdata = df_pred, type = "response", interval = "prediction", level=0.95)
+
+mse_glm1_dummy<-mean((df_pred$totale_ospedalizzati - as.numeric(glm_qs_poisson_dummy))^2)
+
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$glm_qs_poisson_dummy<-as.numeric(glm_qs_poisson_dummy)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$glm_qs_poisson_dummy <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) +
+  
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm_qs_poisson_dummy, col="quasi poisson dummy") ) +
+    geom_line() +
+    scale_color_manual(name="Variable", values = c(1:2))
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+```
+
+
+
+
+### glm Gamma log link DUMMY
+
+```{r, echo=FALSE}
+gamma.glm2_avg.rt_dummy <- glm(totale_ospedalizzati ~ mean_nuovi_positivi + log(mean_dimessi_guariti_per_day)*dummy + rt, data=df_sub, family = Gamma(link = "log"))
+summary(gamma.glm2_avg.rt_dummy)
+```
+
+
+```{r, echo=FALSE}
+glm_gamma_dummy<-predict(gamma.glm2_avg.rt_dummy, newdata = df_pred, type = "response", interval = "prediction", level=0.95)
+
+mse_glm1_dummy<-mean((df_pred$totale_ospedalizzati - as.numeric(glm_gamma_dummy))^2)
+
+df_pred_gml_dummy <- df_pred
+df_pred_gml_dummy$glm_gamma_dummy<-as.numeric(glm_gamma_dummy)
+
+```
+
+```{r, echo=FALSE}
+df_grafico<-df_sub
+df_grafico$glm_gamma_dummy <- df_sub$totale_ospedalizzati
+df_grafico<-rbind(df_grafico, df_pred_gml_dummy)
+
+ggplot(df_grafico, aes(x=as.Date(data), y=totale_ospedalizzati, col='totale_ospedalizzati') ) +
+  
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_line(aes(x=as.Date(data), y=glm_gamma_dummy, col="glm gamma") ) +
+    geom_line() 
+    # geom_errorbar(aes(ymin = lower, ymax = upper))
+```

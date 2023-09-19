@@ -1,0 +1,133 @@
+---
+title: "Untitled"
+author: "Verardo Thomas"
+date: "11/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+data_covid <- read.csv("https://raw.githubusercontent.com/pcm-dpc/COVID-19/master/dati-regioni/dpc-covid19-ita-regioni.csv")
+data <- data_covid[data_covid["codice_regione"] == 3,]
+data <- data[data["data"] >= "2020-10-01T00:00:00",]
+data <- data[data["data"] < "2021-02-01T00:00:00",]
+data$data <- gsub(".{9}$", "", data$data) #Removing time that isn't usefull
+# data$data <- ymd_hms(data$data)
+data$data <- ymd(data$data)
+data
+```
+
+I DATI SONO BUONI? SE CI SONO DELLE NOTE, CI SONO PROBLEMI
+```{r}
+unique(data$note_test)
+unique(data$note)
+unique(data$note_casi)
+```
+I dati non sono stati segnalati come sbagliati, ma questo non significa del tutto che siano giusti
+(poi comunque è da considerare tutto il fattore dei tamponi, dei falsi positivi, del ritardo per prenotare un tampone, per gli asintomatici, per chi è sta male ma resta a casa, ...)
+
+
+Codice-NUTS_1 <-  Classificazione europea delle unità territoriali NUTS: livello NUTS 1.
+```{r}
+summary(data)
+```
+
+
+
+
+
+```{r}
+library(dygraphs)
+library(xts)          # To make the convertion data-frame / xts format
+library(tidyverse)
+library(lubridate)
+
+tot_osp <- xts(x = data$totale_ospedalizzati, order.by = data$data)
+ter_int <- xts(x = data$terapia_intensiva, order.by = data$data)
+
+to_plot_osp <- xts(x = data.frame(data$totale_ospedalizzati, #Asintomatici positivi in ospedale
+                              #Esempio. devi operarti al ginocchi, fai il tampone e sei positivo
+                              data$terapia_intensiva, 
+                              data$ricoverati_con_sintomi
+                              #, data$ingressi_terapia_intensiva
+                              #, data$isolamento_domiciliare
+                              # data$deceduti #not good, because they are total death
+                              #data$totale_positivi
+                              ), 
+               order.by = data$data)
+
+p <- dygraph(to_plot_osp)
+  #   dygraph(ter_int) %>%
+  # dyOptions(labelsUTC = TRUE, fillGraph=TRUE, fillAlpha=0.1, drawGrid = FALSE, colors="#D8AE5A") %>%
+  # dyRangeSelector() %>%
+  # dyCrosshair(direction = "vertical") %>%
+  # dyHighlight(highlightCircleSize = 5, highlightSeriesBackgroundAlpha = 0.2, hideOnMouseOut = FALSE)  %>%
+  # dyRoller(rollPeriod = 1)
+p
+```
+
+```{r}
+to_plot_pos <- xts(x = data.frame(data$totale_positivi, data$totale_ospedalizzati), order.by = data$data)
+
+dygraph(to_plot_pos)
+```
+
+Inutile, viene uno schifo
+```{r}
+library(forecast)
+
+ts_osp <- xts(x = data.frame(data$totale_ospedalizzati #Asintomatici positivi in ospedale
+                              ), 
+               order.by = data$data)
+
+fit <- auto.arima(ts_osp)
+
+
+#forecast(fit, 30)
+
+plot(forecast(fit, 30))
+# plot(naive(ts_osp, 30))
+
+```
+
+LOMBARDIA CODICE NUTS ITC4 (https://github.com/ondata/covid19italia/blob/master/webservices/COVID-19Aree/processing/aree.csv)
+## Merge with aree colori (https://github.com/ondata/covid19italia/tree/master/webservices/COVID-19Aree/processing)
+```{r}
+
+aree_zone <- read.csv("https://raw.githubusercontent.com/ondata/covid19italia/master/webservices/COVID-19Aree/processing/areeStorico_wide.csv")
+aree_zone <- aree_zone[aree_zone["datasetIniISO"] >= "2020-10-01", ]
+aree_zone <- aree_zone[aree_zone["datasetIniISO"] < "2021-02-01", ]
+aree_zone <- data.frame(aree_zone$datasetIniISO, aree_zone$ITC4)
+
+```
+
+
+
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+
+```

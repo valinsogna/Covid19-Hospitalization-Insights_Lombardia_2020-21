@@ -1,0 +1,965 @@
+---
+title: "Statistics Project"
+author: "Roberta"
+date: "11/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(PerformanceAnalytics)
+library(performance)
+library(reshape2)
+library(ggforce)
+library(MASS)
+library(car)
+library(mgcv)
+set.seed(123)
+```
+
+## Exploratory Data Analysis
+
+The dataset of interest contains information about the Covid-19 spreading outbreak (on 30 variables) and is taken from the official website of Protezione Civile.
+
+Download the csv data replacing blanks with NA.
+Extract the data for Lombardia region and restrict the data range to the interval 1st October 2020 to 1st February 2021.
+The number of observations left is 123.
+
+Some of the 30 variables miss information for around 50% or more of the observations. These are:
+
+* `totale_positivi_test_molecolare`
+* `totale_positivi_test_antigenico_rapido`
+* `codice_nuts_1`
+* `codice_nuts_2`
+* `tamponi_test_molecolare`
+* `tamponi_test_antigenico_rapido`
+* `casi_da_sospetto_diagnostico`
+* `casi_da_screening`
+* `ingressi_terapia_intensiva`
+
+Some of the variables are completely missing (will be ignored):
+
+* `note`
+* `note_test`       
+* `note_casi`
+
+In particular, variables related with the tests are available only after date 2021-01-15 (will be ignored) :
+
+* `tamponi_test_molecolare`
+* `tamponi_test_antigenico_rapido`
+* `totale_positivi_test_molecolare`
+* `totale_positivi_test_antigenico_rapido`
+
+This could be related to regional rules, maybe before that date it was not mandatory to provide the details of the tests performed per day and their outcome.
+
+Assuming to exclude all the previously mentioned variables, and variables related to the region identification (such as stato, codice_regione, denominazione_regione, lat, lon) being the response variable the `totale_ospedalizzati`, the **variables left for modeling are 11**:
+
+* `ricoverati_con_sintomi`: Hospitalised patients with symptoms.
+* `terapia_intensiva`: Intensive Care.
+* `isolamento_domiciliare`: Home confinement -> **Newly added by Valeria to df**.
+* `totale_positivi`: Total amount of current positive cases (Hospitalised patients + Home confinement).
+* `variazione_totale_positivi`: New amount of current positive cases (totale_positivi current day - totale_positivi previous day).
+* `nuovi_positivi`: New amount of current positive cases (totale_casi current day - totale_casi previous day).
+* `dimessi_guariti`: Recovered.
+* `deceduti`: Death (cumulated values).
+* `totale_casi`: Total amount of positive cases.
+* `tamponi`: Tests performed.
+* `casi_testati`: Total number of people tested.
+
+ATT: **`ingressi_terapia_intensiva` resta fuori dalla lista** perché carente almeno al 50%, va bene?
+
+5 variables out of the former list are cumulative so they are converted in **per_day** data:
+
+* `dimessi_guariti`
+* `deceduti`
+* `totale_casi`
+* `tamponi`
+* `casi_testati`
+
+```{r include=FALSE}
+df<-read.csv("https://raw.githubusercontent.com/pcm-dpc/COVID-19/master/dati-regioni/dpc-covid19-ita-regioni.csv",na.strings=c("",NA))
+
+df_sub <- df[df$denominazione_regione == 'Lombardia',]
+df_sub <- df_sub[df_sub$data >= "2020-10-01T00:00:00" & df_sub$data <= "2021-02-01T00:00:00",]
+summary(df_sub)
+
+df_sub <- df_sub[,c("data",
+                    "totale_ospedalizzati",
+                    "ricoverati_con_sintomi", 
+                    "totale_positivi", 
+                    "nuovi_positivi", 
+                    "dimessi_guariti", 
+                    "deceduti",
+                    "variazione_totale_positivi", 
+                    "terapia_intensiva",
+                    "casi_testati", 
+                    "totale_casi", 
+                    "tamponi",
+                    "isolamento_domiciliare"
+)]
+
+dimessi_guariti_per_day <- diff(df_sub$dimessi_guariti)
+df_sub$dimessi_guariti_per_day <- c(dimessi_guariti_per_day[1],dimessi_guariti_per_day)
+
+deceduti_per_day <- diff(df_sub$deceduti)
+df_sub$deceduti_per_day <- c(deceduti_per_day[1],deceduti_per_day)
+
+casi_testati_per_day <- diff(df_sub$casi_testati)
+df_sub$casi_testati_per_day <- c(casi_testati_per_day[1],casi_testati_per_day)
+
+totale_casi_per_day <- diff(df_sub$totale_casi)
+df_sub$totale_casi_per_day <- c(totale_casi_per_day[1],totale_casi_per_day)
+
+tamponi_per_day <- diff(df_sub$tamponi)
+df_sub$tamponi_per_day <- c(tamponi_per_day[1],tamponi_per_day)
+
+
+```
+
+Plotting the variable of interest:
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=totale_ospedalizzati)) +
+  geom_line() +
+  xlab("Date") +
+  scale_y_continuous(breaks = seq(0,9500,by=1000))+
+  geom_linerange(aes(ymax=totale_ospedalizzati, 
+                     ymin=df_sub$totale_ospedalizzati[which.min(df_sub$totale_ospedalizzati)]), 
+                 data=df_sub[which.max(df_sub$totale_ospedalizzati),], 
+                 col="red", lty=2) + 
+  geom_text(aes(label=totale_ospedalizzati), 
+            col="red", data=df_sub[which.max(df_sub$totale_ospedalizzati),], 
+            hjust=7, vjust=-0.4) + 
+  geom_text(label=as.Date(df_sub[which.max(df_sub$totale_ospedalizzati),c("data")]), 
+            col="red",
+            x=as.Date(df_sub$data[which.max(df_sub$totale_ospedalizzati)]),
+            y=100,
+            size=3) +
+  geom_segment(x = as.Date(df_sub$data[1]),
+               y = df_sub$totale_ospedalizzati[which.max(df_sub$totale_ospedalizzati)], 
+               xend = as.Date(df_sub$data[which.max(df_sub$totale_ospedalizzati)]), 
+               yend = df_sub$totale_ospedalizzati[which.max(df_sub$totale_ospedalizzati)], 
+               colour = "red",
+               lty=2
+               )
+```
+
+Plotting all the relevant columns in time
+
+```{r echo=FALSE}
+df.m <- melt(df_sub, "data")
+
+ggplot(df.m, aes(as.Date(data), value, group = 1)) + 
+  geom_line() + 
+  facet_wrap(~variable, scales = "free") +
+  xlab("Date")
+
+```
+
+OSS1: `totale_ospedalizzati` is exact the sum of:`ricoverati_con_sintomi` and `terapia_intensiva`.
+
+OSS2: `totale_ospedalizzati` is the difference of: `totale_positivi` - `isolamento_domiciliare`.
+
+Thus these 4 variables out of the list of 11 variables will be omitted. (**Think about a graphic plot to show it**).
+Remaining variables are 7:
+
+* `variazione_totale_positivi`: not interesting.
+* `nuovi_positivi`: interesting.
+* `dimessi_guariti_per_day`: interesting ?
+* `deceduti_per_day`: interesting ?
+* `totale_casi_per_day`: interesting ?
+* `tamponi_per_day`: not interesting ?
+* `casi_testati_per_day`: not interesting ?
+
+OSS3: `nuovi_positivi` is equal to `totale_casi_per_day` -> `totale_casi_per_day` not interesting!
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=nuovi_positivi, color="nuovi_positivi")) +
+  geom_line() + 
+  geom_line(data=df_sub,aes(x=as.Date(data),y=totale_casi_per_day, color="totale_casi_per_day")) +
+  xlab("Date") + 
+  ylab("Daily count") + 
+  scale_color_manual(name="Variable", values = c(1:2))
+  #scale_y_continuous(breaks = seq(0,9500,by=1000))+
+
+```
+
+First let's have a close look to all plus `totale_ospedalizzati`: (there are no NA)
+
+```{r}
+summary(df_sub$variazione_totale_positivi)
+summary(df_sub$nuovi_positivi)
+summary(df_sub$dimessi_guariti_per_day)
+summary(df_sub$deceduti_per_day)
+summary(df_sub$tamponi_per_day)
+summary(df_sub$casi_testati_per_day)
+summary(df_sub$totale_ospedalizzati)
+```
+
+Now let's look at the boxplot to spot outliers:
+
+```{r , echo=FALSE, fig.width=6, fig.height=6}
+# ggplot(df_sub, aes(y=nuovi_positivi)) + 
+#   geom_boxplot()
+varnames <- c("totale_ospedalizzati", "nuovi_positivi", "variazione_totale_positivi", 
+              "dimessi_guariti_per_day", "deceduti_per_day", "casi_testati_per_day",
+               "tamponi_per_day")
+indexes <- c(2,5,8,14,15,16,18)
+# boxplot(df_sub$nuovi_positivi,
+#         xlab=varnames[2],
+#         ylab="Count"
+#         )
+par(mfrow = c(3, 3))
+invisible(lapply(indexes, function(i) boxplot(df_sub[, i], ylab="Count", main=colnames(df_sub)[i])))
+#stripchart(df_sub$nuovi_positivi, method = "jitter", pch = 7, add = TRUE, col = "blue")
+```
+
+So the more affected by outliers are all except `tamponi_per_day` in order of gravity:
+
+* `variazione_totale_positivi`: non ci interessa.
+* `dimessi_guariti_per_day`: **GRAVE perché superano gli ospedalizzati** -> dati aggiornati con discontinuità.
+* `nuovi_positivi`: non ci interessa troppo.
+* `casi_testati_per_day`: **NON GRAVE** -< sono sempre molto meno degli ospedalizzati. 
+* `deceduti_per_day`: non ci interessa troppo.
+
+
+ATT: We will not consider `variazione_totale_positivi` anymore -> list of covariates interesting is now with 5 elements:
+
+* `nuovi_positivi`: interesting.
+* `dimessi_guariti_per_day`: interesting **BUT outliers**.
+* `deceduti_per_day`: interesting.
+* `tamponi_per_day`: not interesting ?
+* `casi_testati_per_day`: not interesting ?
+
+Scatterplot matrix of 3 interesting variables:
+
+```{r , echo=FALSE}
+chart.Correlation(df_sub[,c("nuovi_positivi", 
+                            "dimessi_guariti_per_day",
+                            "deceduti_per_day",
+                            "totale_ospedalizzati"
+                            )])
+
+```
+
+Another scatterplot with remaining 3 variables:
+
+```{r , echo=FALSE}
+chart.Correlation(df_sub[,c("casi_testati_per_day",                            
+                            "tamponi_per_day", 
+                            "totale_ospedalizzati"
+                            )])
+
+```
+
+Plotting all 5 interesting variables for the response variable `totale_ospedalizzati`.
+
+This is per date to see outliers.
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=nuovi_positivi, color="nuovi_positivi")) +
+  geom_line() + 
+  geom_line(data=df_sub,aes(x=as.Date(data),y=totale_ospedalizzati, color="totale_ospedalizzati")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=dimessi_guariti_per_day, color="dimessi_guariti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=deceduti_per_day, color="deceduti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=casi_testati_per_day, color="casi_testati_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=tamponi_per_day, color="tamponi_per_day")) +
+  xlab("Date") + 
+  ylab("Daily count") + 
+  scale_color_manual(name="Variable", values = c(1:6))
+  #scale_y_continuous(breaks = seq(0,9500,by=1000))+
+
+```
+
+List of covariates interesting is now with 3 elements since `tamponi_per_day` and `casi_testati_per_day` do not seems intersting. -> **check later**
+
+* `nuovi_positivi`: interesting.
+* `dimessi_guariti_per_day`: interesting **BUT outliers**.
+* `deceduti_per_day`: interesting.
+
+Plotting all 3 interesting variables for the response variable `totale_ospedalizzati`.
+
+```{r , echo=FALSE}
+ggplot(df_sub, aes(x=as.Date(data), y=nuovi_positivi, color="nuovi_positivi")) +
+  geom_line() + 
+  geom_line(data=df_sub,aes(x=as.Date(data),y=totale_ospedalizzati, color="totale_ospedalizzati")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=dimessi_guariti_per_day, color="dimessi_guariti_per_day")) +
+  geom_line(data=df_sub,aes(x=as.Date(data),y=deceduti_per_day, color="deceduti_per_day")) +
+  xlab("Date") + 
+  ylab("Daily count") + 
+  scale_color_manual(name="Variable", values = c(1:4))
+  #scale_y_continuous(breaks = seq(0,9500,by=1000))+
+
+```
+
+This is with respect to `totale_ospedalizzati`, to see linear trend: only `deceduti_per_day` seems to be linear with it!
+
+```{r, echo=FALSE}
+ggplot(df_sub, aes(x=totale_ospedalizzati, y=nuovi_positivi, color="nuovi_positivi")) +
+  geom_point() + 
+  geom_point(data=df_sub,aes(x=totale_ospedalizzati,y=dimessi_guariti_per_day, color="dimessi_guariti_per_day")) +
+  geom_point(data=df_sub,aes(x=totale_ospedalizzati,y=deceduti_per_day, color="deceduti_per_day")) +
+  xlab("totale_ospedalizzati") + 
+  ylab("Variable") + 
+  scale_color_manual(name="Variable", values = c(1:3)) +
+  facet_zoom(ylim = c(0, 1000))
+```
+
+Let's look better:
+
+```{r, echo=FALSE}
+plot1 <- ggplot(df_sub, aes(x=totale_ospedalizzati, y=nuovi_positivi)) +
+  geom_point(color="red") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("nuovi_positivi")
+
+plot2 <- ggplot(df_sub, aes(x=totale_ospedalizzati, y=dimessi_guariti_per_day)) +
+  geom_point(color="green") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("dimessi_guariti_per_day")
+
+plot3 <- ggplot(df_sub, aes(x=totale_ospedalizzati, y=deceduti_per_day)) +
+  geom_point(color="black") + 
+  xlab("totale_ospedalizzati") + 
+  ylab("deceduti_per_day")
+library(ggpubr)
+ggarrange(plot1, plot2, plot3, ncol = 2, nrow = 2)
+```
+
+There are days in which there are more dimessi than 10000 persone which is larger than the total of hospitalized in that day!
+
+## Linear model: forward + occam razor approch 
+
+###  LM1 - 1 covariate
+
+Only the covariate `nuovi_positivi` for regressing the dependent variable `totale_ospedalizzati`: $totale.ospedalizzati=\beta_{0}+\beta_{1}*nuovi.positivi$.
+
+```{r, echo=FALSE}
+lm1 <- lm(totale_ospedalizzati ~ nuovi_positivi, data=df_sub)
+
+#See the output 
+summary(lm1)
+```
+
+Residuals plot:
+
+```{r, echo=FALSE}
+##plot of the residuals
+par(mfrow=c(2,2))
+plot(lm1)
+```
+
+Predicted points vs actual:
+
+```{r, echo=FALSE}
+##plot of the fitted values
+par(mfrow=c(1,1))
+with(df_sub, plot(nuovi_positivi,totale_ospedalizzati, pch=19))
+abline(coef(lm1), col="red", lty="solid")
+# or
+#curve(predict(lm1, data.frame(dist=x)), col="red", lty="solid", lwd=2, add=TRUE)
+
+text(6100,4400,expression(totale_ospedalizzati==hat(beta)[0]+hat(beta)[1]*dist), col="red")
+
+points(df_sub$nuovi_positivi, predict(lm1), col="red", pch=19, cex=1)
+# or
+#points(nihills$dist, fitted(lm1), col="red", pch=19, cex=0.8)
+
+segments(df_sub[17,]$nuovi_positivi,df_sub[17,]$totale_ospedalizzati, 
+         df_sub[17,]$nuovi_positivi,fitted(lm1)[17], lty="dashed")
+```
+
+###  LM2 - 2 covariates
+
+Adding also `dimessi_guariti_per_day` for regressing the dependent variable `totale_ospedalizzati`: $totale.ospedalizzati=\beta_{0}+\beta_{1}*nuovi.positivi+\beta_{2}*dimessi.guariti.per.day$.
+
+```{r, echo=FALSE}
+lm2 <- lm(totale_ospedalizzati ~ nuovi_positivi + dimessi_guariti_per_day, data=df_sub)
+
+#See the output 
+summary(lm2)
+```
+
+As you can see, **Adjusted R-squared (0.5557) is better than previous model 0.2998**!
+
+Plot the residuals
+
+```{r, echo=FALSE}
+par(mfrow = c(2,2))
+plot(lm2)
+```
+
+**Now QQ-Plot better understand the high tail, but not the lower one**.
+Residuals slightly improved.
+
+Looking at the residuals plot vs the continuous explanatory variable is a good check to highlight (if any) residual structures in the residuals.
+
+```{r, echo=FALSE}
+par(mfrow=c(1,1))
+plot(df_sub$nuovi_positivi, lm2$residuals)
+abline(h=0, lty="dashed")
+```
+
+Looking at the residuals plot vs the continuous explanatory variable is a good check to highlight (if any) residual structures in the residuals.
+
+```{r, echo=FALSE}
+par(mfrow=c(1,1))
+plot(df_sub$dimessi_guariti_per_day, lm2$residuals)
+abline(h=0, lty="dashed")
+```
+
+## LM3 - 3 covariates
+
+Adding also `deceduti_per_day` for regressing the dependent variable `totale_ospedalizzati`: $totale.ospedalizzati=\beta_{0}+\beta_{1}*nuovi.positivi+\beta_{2}*dimessi.guariti.per.day+\beta_{3}*deceduti.per.day$.
+
+```{r, echo=FALSE}
+lm3 <- lm(totale_ospedalizzati ~ nuovi_positivi + dimessi_guariti_per_day + deceduti_per_day, data=df_sub)
+
+#See the output 
+summary(lm3)
+```
+
+As you can see, **Adjusted R-squared (0.8198) is better than previous model 0.5557**!
+
+Plot the residuals
+
+```{r, echo=FALSE}
+par(mfrow = c(2,2))
+plot(lm3)
+```
+
+**Now QQ-Plot better understand better the tails**.
+**Residuals even more slightly improved**.
+Is it normal though that if deaths increase, hospitalize people increase? Should be the reverse! It is ok since detch rate is the bottom index that will descrease.
+
+###  LM4 - 3 covariates, 1 with log
+
+Look the histograms of time, dist and climb
+
+```{r, echo=FALSE, fig.width=6, fig.height=6}
+par(mfrow=c(2,2))
+hist(df_sub$totale_ospedalizzati, probability=TRUE, breaks=20)
+hist(df_sub$nuovi_positivi, probability=TRUE, breaks=20)
+hist(df_sub$dimessi_guariti_per_day, probability=TRUE, breaks=20)
+hist(df_sub$deceduti_per_day, probability=TRUE, breaks=20)
+```
+
+The distribution dimessi_guariti_per_day has a long right tail, and lot of values are shrunk towards zero. Furthermore, the extreme point on the right tail -outliers- influences a lot the estimation of the equation line, it has large leverage. Maybe, we need a more symmetric distribution, such as log(yi) above. It is also reasonable to take the logarithm of the explanatory variables.
+
+So let's use the model: $totale.ospedalizzati=\beta_{0}+\beta_{1}*nuovi.positivi+\beta_{2}*log(dimessi.guariti.per.day)+\beta_{3}*deceduti.per.day$.
+
+```{r, echo=FALSE}
+lm4 <- lm(totale_ospedalizzati ~ nuovi_positivi+ log(dimessi_guariti_per_day) + deceduti_per_day, data=df_sub)
+#See the output 
+summary(lm4)
+```
+
+Now **Adjusted R-squared is 0.8559, better than 0.8198**.
+
+Plot the residuals
+
+```{r, echo=FALSE}
+par(mfrow = c(2,2))
+plot(lm4)
+```
+
+Looking at the residuals plot vs the continuous explanatory variable is a good check to highlight (if any) residual structures in the residuals.
+
+```{r, echo=FALSE}
+par(mfrow=c(1,1))
+plot(df_sub$dimessi_guariti_per_day, lm4$residuals)
+abline(h=0, lty="dashed")
+```
+
+
+###  LM5 - 3 covariates, 2 with log -> EXCLUDE
+
+Let's use the model: $totale.ospedalizzati=\beta_{0}+\beta_{1}*nuovi.positivi+\beta_{2}*log(dimessi.guariti.per.day)+\beta_{3}*log(deceduti.per.day)$.
+
+```{r, echo=FALSE}
+#Replace first data with 1, since log(0) is error
+indexeses <- which(df_sub$deceduti_per_day==0)
+df_sub$deceduti_per_day[6] <- 1
+
+lm5 <- lm(totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day) + log(deceduti_per_day), data=df_sub)
+
+#See the output 
+summary(lm5)
+```
+
+```{r, echo=FALSE}
+par(mfrow = c(2,2))
+plot(lm5)
+```
+
+###  LM6 and 7 - 3 covariates + 1 not interesting
+
+Let's see what happens to Adjusted R-squared when we add one of the 2 not interesting variables:
+
+* `tamponi_per_day`
+* `casi_testati_per_day`
+
+First add `tamponi_per_day`.
+So let's use the model: $totale.ospedalizzati=\beta_{0}+\beta_{1}*nuovi.positivi+\beta_{2}*log(dimessi.guariti.per.day)+\beta_{3}*deceduti.per.day+\beta_{4}tamponi_per_day$.
+
+```{r, echo=FALSE}
+# Fit the linear model 1: time = beta_0+beta_1*nuovi_positivi + epsilon
+lm6 <- lm(totale_ospedalizzati ~ nuovi_positivi+ log(dimessi_guariti_per_day) + deceduti_per_day + tamponi_per_day, data=df_sub)
+
+#See the output 
+summary(lm6)
+```
+
+**Firstly, the t-test of `tamponi_per_day` leads to accept the null hypotesis: coeff is equal to 0**.
+**Then the Adjusted R-squared is better 0.8626, slightly more than before (0.8559)**.-< how cares! t-test sucks!
+
+Now add `casi_testati_per_day`.
+So let's use the model: $totale.ospedalizzati=\beta_{0}+\beta_{1}*nuovi.positivi+\beta_{2}*log(dimessi.guariti.per.day)+\beta_{3}*deceduti.per.day+\beta_{4}casi_testati_per_day$.
+
+```{r, echo=FALSE}
+lm7 <- lm(totale_ospedalizzati ~ nuovi_positivi+ log(dimessi_guariti_per_day) + deceduti_per_day + casi_testati_per_day, data=df_sub)
+
+#See the output 
+summary(lm7)
+```
+
+**Firstly, the t-test of `casi_testati_per_day` is good with \alpha, but the Intercept t-test is worse than the normal log model**.
+**But the Adjusted R-squared has increased 0.8852, better than before (0.8559)**.
+
+Plot the residuals:
+
+```{r, echo=FALSE}
+par(mfrow = c(2,2))
+plot(lm7)
+```
+
+```{r, echo=FALSE}
+par(mfrow=c(1,1))
+plot(df_sub$deceduti_per_day, lm6$residuals)
+abline(h=0, lty="dashed")
+```
+
+What should we do? Take it into account? I think not since `casi_testati_per_day` is the number of total persons tested either positive or negative to Covid19, so maybe in those days the number person being tested were more everyday since there was more disposal of covid tests!
+
+## LM models confront
+
+Let's see if there is multicollinearity between covariates in all the LM models:
+
+```{r, echo=FALSE}
+print("lm2")
+vif(lm2)
+print("lm3")
+vif(lm3)
+print("lm4")
+vif(lm4)
+print("lm5")
+vif(lm5)
+print("lm6")
+vif(lm6)
+print("lm7")
+vif(lm7)
+#See the output 
+```
+Since all indexes are lower than 10, there is no multicollinearity between covariates.
+
+Let's check the AIC values:
+
+```{r, echo=FALSE}
+# AIC
+AIC <- rbind(extractAIC(lm1)[2],extractAIC(lm2)[2],
+             extractAIC(lm3)[2],extractAIC(lm4)[2],
+             extractAIC(lm5)[2],extractAIC(lm6)[2],
+             extractAIC(lm7)[2]
+             )
+#See the output 
+AIC
+```
+
+**LM4 model has the second minimum AIC**, if we exclude LM6 (since R2 is the worse). 
+LM7 has the best score but the variable is meaningless to our purpose.
+
+## GLM con Poisson: reverse approch
+
+Now we can relax the hypotesis of normality, using a distribution with support in $[0,\inf]$.
+
+###  GLM1 - 3 covariates, 1 log
+
+```{r, echo=FALSE}
+glm1 <- glm(totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day) + deceduti_per_day, data=df_sub, poisson)
+summary(glm1)
+```
+
+ATT: Deviance residuals are approximately normally distributed if the model is specified correctly. In our example, it shows a little bit of skeweness since median is not quite zero, and 75th percentile is not 68.
+
+Null deviance: 207553  on 122  degrees of freedom
+Residual deviance:  53701  on 119  degrees of freedom
+**Residual D = 53701**
+**AIC: 54942**
+
+**Remember AIC for lm4 is better: 1697.262!**
+
+###  GLM2 - 3 covariates
+
+```{r, echo=FALSE}
+glm2 <- glm(totale_ospedalizzati ~ nuovi_positivi + dimessi_guariti_per_day + deceduti_per_day, data=df_sub, poisson)
+summary(glm2)
+```
+
+Null deviance: 207553  on 122  degrees of freedom.
+Residual deviance:  73889  on 119  degrees of freedom.
+
+**Residual D = 73889, than GLM1 is better**.
+**AIC: 75130**.
+
+###  GLM3 - 2 covariates, 1 log
+
+```{r, echo=FALSE}
+glm3 <- glm(totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day), data=df_sub, poisson)
+summary(glm3)
+```
+
+###  GLM4 - 2 covariates
+
+```{r, echo=FALSE}
+glm4 <- glm(totale_ospedalizzati ~ nuovi_positivi + dimessi_guariti_per_day, data=df_sub, poisson)
+summary(glm4)
+```
+
+###  GLM5 - 1 covariate
+
+```{r, echo=FALSE}
+glm5 <- glm(totale_ospedalizzati ~ nuovi_positivi, data=df_sub, poisson)
+summary(glm5)
+```
+
+
+We can use the residual deviance to perform a goodness of fit test for the overall model. The residual deviance is the difference between the deviance of the current model and the maximum deviance of the ideal model where the predicted values are identical to the observed. Therefore, if the residual difference is small enough, the goodness of fit test will not be significant, indicating that the model fits the data. We conclude that the model fits reasonably well because the goodness-of-fit chi-squared test is not statistically significant. If the test had been statistically significant, it would indicate that the data do not fit the model well. In that situation, we may try to determine if there are omitted predictor variables, if our linearity assumption holds and/or if there is an issue of over-dispersion.
+
+
+## Little thoery digression
+
+Generalized linear model is defined in terms of linear predictor
+
+𝜂=𝑋𝛽
+that is passed through the link function 𝑔:
+
+𝑔(𝐸(𝑌|𝑋))=𝜂
+It models the relation between the dependent variable 𝑌 and independent variables 𝑋=𝑋1,𝑋2,…,𝑋𝑘. More precisely, it models a conditional expectation of 𝑌 given 𝑋,
+
+𝐸(𝑌|𝑋)=𝜇=𝑔−1(𝜂)
+so the model can be defined in probabilistic terms as
+
+𝑌|𝑋∼𝑓(𝜇,𝜎2)
+where 𝑓 is a probability distribution of the exponential family. So first thing to notice is that 𝑓 is not the distribution of 𝑌, but 𝑌 follows it conditionally on 𝑋. The choice of this distribution depends on your knowledge (what you can assume) about the relation between 𝑌 and 𝑋. So anywhere you read about the distribution, what is meant is the conditional distribution.
+
+If your outcome is continuous and unbounded, then the most "default" choice is the Gaussian distribution (a.k.a. normal distribution), i.e. the standard linear regression (unless you use other link function then the default identity link).
+
+If you are dealing with continuous non-negative outcome, then you could consider the Gamma distribution, or Inverse Gaussian distribution.
+
+If your outcome is discrete, or more precisely, you are dealing with counts (how many times something happen in given time interval), then the most common choice of the distribution to start with is Poisson distribution. The problem with Poisson distribution is that it is rather inflexible in the fact that it assumes that mean is equal to variance, if this assumption is not met, you may consider using quasi-Poisson family, or negative binomial distribution (see also Definition of dispersion parameter for quasipoisson family).
+
+If your outcome is binary (zeros and ones), proportions of "successes" and "failures" (values between 0 and 1), or their counts, you can use Binomial distribution, i.e. the logistic regression model. If there is more then two categories, you would use multinomial distribution in multinomial regression.
+
+On another hand, in practice, if you are interested in building a predictive model, you may be interested in testing few different distributions, and in the end learn that one of them gives you more accurate results then the others even if it is not the most "appropriate" in terms of theoretical considerations (e.g. in theory you should use Poisson, but in practice standard linear regression works best for your data).
+
+```{r eval=FALSE, include=FALSE}
+#par(mfrow=c(2,2))
+n <- length(df_sub$totale_ospedalizzati) # n observations
+hist(df_sub$totale_ospedalizzati, probability=TRUE, breaks=30)
+mean <- mean(df_sub$totale_ospedalizzati)
+x <- seq(0,9340)
+#curve(dnorm(x, mean, 1), col = "red", lwd = 2, add = TRUE)}
+lines(x, dnorm(x, mean, n), col = "red", lwd = 2)
+lines(x, dchisq(x, df = n), col = "green", lwd = 1.5)
+lines(x, dgamma(x, shape = 5000, rate = 1), col = "blue", lwd = 1.5)
+lines(x, dcauchy(x, location = mean, scale = 1000, log = FALSE), col = "pink", lwd = 2)
+lines(x, dpois(x, mean, log = FALSE), col = "black", lwd = 1.5)
+```
+
+Let's look for overdispertion (in Poisson $\phi=1$):
+
+```{r, echo=FALSE}
+check_overdispersion(glm1)
+```
+
+There is, so let's try another distribution.
+
+## QuasiPoisson GLMs
+
+In quasi-likelihood method we relax the assumption of having an exponential family distribution.
+**The parameters will be the same of GLM but their std.error will be different.**
+
+### QP-GLM with 3 covariates, 1 log
+
+```{r, echo=FALSE}
+qp.glm1 <- glm(totale_ospedalizzati ~ nuovi_positivi+ dimessi_guariti_per_day + deceduti_per_day, data=df_sub, quasipoisson)
+summary(qp.glm1)
+print("Real Residual Deviance:")
+print(sum(residuals.glm(qp.glm1, "deviance")^2)/summary(qp.glm1)$dispersion)
+```
+Residuals don't follow a normal distribution.
+Null deviance: 207553  on 122  degrees of freedom
+**Residual D = 140.4591**  -> divided by dispertion
+**AIC: NA**
+
+### QP-GLM with 3 covariates, 1 log
+
+```{r, echo=FALSE}
+qp.glm2 <- glm(totale_ospedalizzati ~ nuovi_positivi+ log(dimessi_guariti_per_day) + deceduti_per_day, data=df_sub, quasipoisson)
+summary(qp.glm2)
+
+print("Real Residual Deviance:")
+print(sum(residuals.glm(qp.glm2, "deviance")^2)/summary(qp.glm2)$dispersion)
+
+```
+
+Residuals seems to follow a normal distribution.
+Null deviance: 207553  on 122  degrees of freedom
+**Residual D = 128.2974**  -> better then GLM1
+**AIC: NA**
+
+Remember the same model but with GLM:
+
+glm(formula = totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day) + 
+    deceduti_per_day, family = poisson, data = df_sub)
+
+Deviance Residuals: 
+    Min       1Q   Median       3Q      Max  
+-45.273  -11.845   -0.844   10.692   59.762  
+
+Coefficients:
+                              Estimate Std. Error z value Pr(>|z|)    
+(Intercept)                  6.018e+00  1.038e-02  579.75   <2e-16 ***
+nuovi_positivi               4.154e-05  4.889e-07   84.97   <2e-16 ***
+log(dimessi_guariti_per_day) 2.553e-01  1.442e-03  177.04   <2e-16 ***
+deceduti_per_day             3.300e-03  2.483e-05  132.91   <2e-16 ***
+
+
+### Negative Binomial GLM (not a member of GLM)
+
+Better not to use cause there is another varibale added and plus they might asks questions.
+
+```{r, echo=FALSE}
+glm8 <- glm.nb(totale_ospedalizzati ~ nuovi_positivi+ log(dimessi_guariti_per_day) + deceduti_per_day, data=df_sub)
+summary(glm8)
+
+```
+
+## GAM
+
+```{r, echo=FALSE}
+gam1 <- gam(totale_ospedalizzati ~ s(nuovi_positivi) + log(dimessi_guariti_per_day) + deceduti_per_day, data=df_sub)
+summary(gam1)
+#save.image(file='data_V1.RData')
+```
+```{r, echo=FALSE}
+gam2 <- gam(totale_ospedalizzati ~ s(nuovi_positivi) + log(dimessi_guariti_per_day) + deceduti_per_day, data=df_sub, family = poisson(link = log))
+summary(gam2)
+#save.image(file='data_V1.RData')
+```
+
+```{r echo=TRUE}
+anova(gam1, gam2, test="Chisq")
+
+AIC(gam1)
+AIC(gam2)
+
+summary(gam1)$sp.criterion
+summary(gam2)$sp.criterion
+
+summary(gam1)$r.sq
+summary(gam2)$r.sq  # adjusted R squared
+#save.image(file='data_V1.RData')
+```
+```{r, echo=FALSE}
+# Look the coefficient of gam2
+coef(gam2)
+#save.image(file='data_V1.RData')
+```
+
+Diagnostic plot involve the representation of the smooth function and the partial residuals defined as:
+ϵ̂ partij=ŝ j(xij)+ϵ̂ Pi
+where ϵ̂ P are the Pearson residuals of the model. Looking at this plot we are interested in noticing non linearity or wiggle behavior of the smooth function and if the partial residuals are evenly distributed around the function.
+
+```{r, echo=FALSE}
+# Diagnostic plot:
+plot(gam2, residuals = TRUE, pch = 19, pages = 1)
+```
+## Adding covariates: Lombardia (ITC4) region color in time -> check for legislation in that period!
+
+Extracting zone colors from 14 days before the analysis reference period.
+Assuming that effects of restriction rules can be seen only after a certain 
+amount of time.
+
+```{r, echo=FALSE}
+aree_zone <- read.csv("https://raw.githubusercontent.com/ondata/covid19italia/master/webservices/COVID-19Aree/processing/areeStorico_wide.csv")
+aree_zone <- aree_zone[aree_zone["datasetIniISO"] >= "2020-10-01", ]
+aree_zone <- aree_zone[aree_zone["datasetIniISO"] < "2021-02-01", ]
+aree_zone <- data.frame(aree_zone$datasetIniISO, aree_zone$ITC4)
+
+column_new_dates <- data.frame(seq(from = as.Date("2020-10-01T17:00:00"), to = as.Date("2021-02-01T17:00:00"), by= "day"))
+colnames(column_new_dates) <- "data"
+colnames(aree_zone) <- c("data", "color")
+aree_zone$data <- as.Date(aree_zone$data)
+
+#Remove rows with empty color
+aree_zone <- aree_zone[!(is.na(aree_zone$color) | aree_zone$color==""), ]
+
+aree_zone_merged <- merge(column_new_dates, aree_zone, by = "data", all.x = TRUE)
+
+aree_zone_merged[1,2] <- "bianca"
+
+last_color = "bianca"
+for (i in 1:nrow(aree_zone_merged)){
+    if(is.na(aree_zone_merged[i,2])){
+        aree_zone_merged[i,2] = last_color
+    }else{
+        last_color = aree_zone_merged[i,2]
+    }
+}
+
+# Delay the colors by 2 weeks: shift forward the color vector by 14 cells
+# prepending 14 cells (days) of zona bianca
+d_color <- aree_zone_merged$color
+color_delayed <- c(rep("bianca",times=28), d_color[1:(length(d_color)-28)])
+aree_zone_merged_ext <- aree_zone_merged
+str(aree_zone_merged_ext)
+aree_zone_merged_ext$color_delayed <- as.factor(color_delayed)
+
+df_sub$data <- as.Date(df_sub$data)
+
+df_sub <- merge(df_sub, aree_zone_merged_ext, by = "data")
+#df_sub
+df_sub$color <- as.factor(df_sub$color)
+df_sub$color_delayed <- as.factor(df_sub$color_delayed)
+```
+
+## Adding Regional Colors as covariate with NO interaction (on GLM1)
+If we have a categorical variable *C*  with *J*  levels, the number of dummy variables required to encode *C*  is  *J−1*. R does the dummification automatically if it detects that a factor variable is present in the regression model.
+```{r, echo=FALSE}
+glm1.c <- glm(formula = totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day) + 
+    deceduti_per_day + color, family = poisson, data = df_sub)
+summary(glm1.c)
+```
+**AIC = 37880**
+**Residual deviance = 36634**
+Improvement with respect to GLM1 which has:  
+AIC=54942  
+Residual deviance = 53701
+However the **residuals are not normally distributed**. 
+Factor level "gialla" is not very meaningful wrt to other factor levels but is also  the less frequent. Maybe this is why it comes out to be not very relevant
+```{r, echo=FALSE}
+table(df_sub$color)
+
+```
+With **color_delayed**
+```{r, echo=FALSE}
+glm1.cd <- glm(formula = totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day) + 
+    deceduti_per_day + color_delayed, family = poisson, data = df_sub)
+summary(glm1.cd)
+```
+## Adding Regional Colors as covariate with  interaction (on GLM1)
+If we have a categorical variable *C*  with *J*  levels, the number of dummy variables required to encode *C*  is  *J−1*. R does the dummification automatically if it detects that a factor variable is present in the regression model.
+```{r, echo=FALSE}
+glm1.ci <- glm(formula = totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day) + 
+    deceduti_per_day + color*nuovi_positivi, family = poisson, data = df_sub)
+summary(glm1.ci)
+```
+**AIC = 22305**
+**Residual deviance = 21053**
+Improvement with respect to GLM1 which has:  
+AIC=54942  
+Residual deviance = 53701
+
+With **color_delayed**
+```{r, echo=FALSE}
+glm1.cid <- glm(formula = totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day) + 
+    deceduti_per_day + color_delayed*nuovi_positivi, family = poisson, data = df_sub)
+summary(glm1.cid)
+```
+## Adding Regional Colors as covariate with NO interaction (on GAM2)
+
+```{r, echo=FALSE}
+summary(gam2)
+gam2.c <- gam(totale_ospedalizzati ~ s(nuovi_positivi) + log(dimessi_guariti_per_day) + deceduti_per_day + color, data=df_sub, family = poisson(link = log))
+summary(gam2.c)
+```
+
+With **color_delayed**
+```{r, echo=FALSE}
+summary(gam2)
+gam2.cd <- gam(totale_ospedalizzati ~ s(nuovi_positivi) + log(dimessi_guariti_per_day) + deceduti_per_day + color_delayed, data=df_sub, family = poisson(link = log))
+summary(gam2.cd)
+```
+Comparing AIC wrt gam2
+```{r, echo=FALSE}
+AIC(gam2, gam2.c, gam2.cd)
+
+```
+```{r, echo=FALSE}
+# Diagnostic plot:
+plot(gam2.c, residuals = TRUE, pch = 19, pages = 1)
+```
+## Adding Regional Colors as covariate with  interaction (on GAM2)
+```{r, echo=FALSE}
+gam2.ci <- gam(totale_ospedalizzati ~ s(nuovi_positivi) + log(dimessi_guariti_per_day) + deceduti_per_day + s(nuovi_positivi, by=color), data=df_sub, family = poisson(link = log))
+summary(gam2.ci)
+```
+With **color_delayed**
+```{r, echo=FALSE}
+gam2.cid <- gam(totale_ospedalizzati ~ s(nuovi_positivi) + log(dimessi_guariti_per_day) + deceduti_per_day + s(nuovi_positivi, by=color_delayed), data=df_sub, family = poisson(link = log))
+summary(gam2.cid)
+```
+
+Comparing AIC wrt gam2.c
+```{r, echo=FALSE}
+AIC(gam2, gam2.c, gam2.ci, gam2.cid)
+
+```
+```{r, echo=FALSE}
+# Diagnostic plot:
+plot(gam2.ci, residuals = TRUE, pch = 19, pages = 1)
+```
+## Adding covariates: Lombardia (ITC4) RT in time 
+
+Rt for the reference interval
+
+```{r, echo=FALSE}
+rt_lomb <- read.csv("G:\\Il mio Drive\\Statistics Project 2021\\iss_rt_lombardia.csv")
+rt_lomb <- rt_lomb[rt_lomb["data"] >= "2020-10-01", ]
+rt_lomb <- rt_lomb[rt_lomb["data"] < "2021-02-01", ]
+
+
+rt <- data.frame(data=as.Date(rt_lomb$data), rt=rt_lomb$rt_positivi)
+summary(rt)
+
+df_sub <- merge(df_sub, rt, by = "data")
+
+```
+## Adding RT as covariate (on GLM1)
+```{r, echo=FALSE}
+glm1.rt <- glm(formula = totale_ospedalizzati ~ nuovi_positivi + log(dimessi_guariti_per_day) + 
+    deceduti_per_day + rt, family = poisson, data = df_sub)
+summary(glm1.rt)
+```
+**AIC = 31918**
+**Residual deviance = 30676**
+Improvement with respect to GLM1 which has:  
+AIC=54942  
+Residual deviance = 53701
+Comparing AIC wrt glm1
+```{r, echo=FALSE}
+AIC(glm1,glm1.rt)
+
+```
+## Adding RT as covariate (on GAM2)
+```{r, echo=FALSE}
+gam2.rt <- gam(totale_ospedalizzati ~ s(nuovi_positivi) + log(dimessi_guariti_per_day) + deceduti_per_day + rt, data=df_sub, family = poisson(link = log))
+summary(gam2.rt)
+```
+Comparing AIC wrt gam2
+```{r, echo=FALSE}
+AIC(gam2,gam2.rt)
+
+```
